@@ -36,10 +36,14 @@ EXPECTED_ROBOTS = (
     "robocasa",
     "robodojo",
     "robotwin",
+    "unitree",
     "yam",
 )
 
+EXPECTED_DASHBOARD_ROBOTS = tuple(name for name in EXPECTED_ROBOTS if name != "unitree")
+
 PROMPT_VARIABLES = {
+    "unitree": {"task": "让机器狗往前走", "env_endpoint": "http://127.0.0.1:8115"},
     "yam": {
         "task_id": 1,
         "seed": 0,
@@ -192,7 +196,7 @@ def test_libero_prompts_observe_task_before_reading_memory(
     )
 
 
-@pytest.mark.parametrize("robot_name", EXPECTED_ROBOTS)
+@pytest.mark.parametrize("robot_name", EXPECTED_DASHBOARD_ROBOTS)
 def test_dashboard_metadata_has_consistent_fields_and_runtime_components(
     robot_name: str,
 ) -> None:
@@ -213,6 +217,14 @@ def test_dashboard_metadata_has_consistent_fields_and_runtime_components(
         "unique",
         "shared",
     }
+
+
+def test_unitree_declares_terminal_command_delivery_capabilities() -> None:
+    spec = get_robot_spec("unitree")
+    assert spec.is_real_robot
+    assert spec.dashboard is None
+    assert not spec.supports_exploration
+    assert spec.run_flash is None
 
 
 def test_run_config_and_robot_spec_are_frozen_contract_values() -> None:

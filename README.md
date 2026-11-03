@@ -112,6 +112,9 @@ RPent is built for four kinds of users:
 
 ## Quick Start
 
+For a CPU-only Unitree command RPC prototype with a local mock receiver, see
+the [Unitree command integration](robots/unitree/README.md).
+
 **1. Choose an environment and install RPent.**
 
 ```bash

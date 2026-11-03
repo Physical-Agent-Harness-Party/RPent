@@ -196,7 +196,8 @@ def _build_argparser() -> argparse.ArgumentParser:
         "--memory-profile",
         choices=["hf", "local"],
         default=None,
-        help="Memory profile (default: hf for evaluation, local for exploration).",
+        help="Memory profile (default: hf for evaluation, local for exploration, "
+        "unless overridden by the robot).",
     )
     ap.add_argument(
         "--memory-dir",
