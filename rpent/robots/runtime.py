@@ -77,9 +77,12 @@ def try_wait_server(
     timeout_s: float,
     *,
     post_fn: Callable[[], Any] | None = None,
+    probe_method: str = "healthz",
 ):
     try:
-        wait_for_ready(rpc, daemon=daemon, timeout_s=timeout_s)
+        wait_for_ready(
+            rpc, daemon=daemon, timeout_s=timeout_s, probe_method=probe_method
+        )
         result = None
         if post_fn is not None:
             result = post_fn()

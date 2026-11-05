@@ -1,90 +1,114 @@
-# 宇树命令 RPC 接入验证
+# 宇树多机器人中转 RPC 接入
 
 [English](README.md)
 
-这个后端把自然语言任务接到两个 Planner 工具：
-`move_forward()` 发送 `前进`，`move_backward()` 发送 `后退`。
-随附的本地假 Server 记录字符串并确认收到命令。
-当前验证范围是命令送达；机器人运动、ROS2 控制、Docker 初始化、VLA 推理和相机观测尚未实现。
+这个后端通过本地 HTTP RPC 连接通信中转服务，查询在线机器人，并同步执行 `dis_move` 相对移动指令。
+通信程序负责本体主动建立的 WebSocket 连接、注册、心跳和机器人级忙碌判断。
+RPent 复用现有 RPC 客户端、工具调度和状态记录，不直接调用本体 SDK。
 
-## 运行条件
+## 工具和运动语义
 
-在已激活的环境中安装 RPent 基础依赖：
+| 工具 | 功能 |
+| --- | --- |
+| `list_robots()` | 查询在线机器人列表 |
+| `get_robot_status(robot_index=None)` | 查询指定机器人最近的在线状态 |
+| `execute_command(dx_m, dy_m, arrival_turn_deg, robot_index=None)` | 等待相对移动、停止和最终验收 |
+
+省略 `robot_index` 时使用 `--robot-index` 配置的默认目标；没有默认值时必须显式指定。
+显式参数可以选择其他机器人，默认目标不构成访问限制。
+
+`dx_m`、`dy_m` 为本次执行起始身体坐标系中的目标偏移，单位米；正 x 向前、正 y 向左。
+本体先朝向固定目标点并向前行走，到达并停稳后，以实际到达朝向为基准转动 `arrival_turn_deg` 度，正值左转。
+因此，负 x 目标表示转向后方再向前走，不表示直接倒退；该分支的完整真机执行尚未通过。
+零位移可原地转向；450° 保留一圈再加 90°，不归一化。三个参数均须为有限数字，合成位移不得超过 5 米。
+速度、持续时间、坐标序列和云端停止命令不在本版接口中。5 米是输入上限，不表示已完成满程真机验证。
+
+工具内部固定构造 `{"type":"dis_move","payload":{...}}`；无需在任务中再提供编码。
+可以输入“机器人1到起点前方0.4米、左侧0.3米的位置，停稳后左转30度”。任务仍需提供足够的距离和目标信息。
+
+## 运行条件与只读查询
+
+在已激活的环境中安装基础依赖，并配置使用的 Planner API：
 
 ```bash
 pip install -e .
 ```
 
-规划器示例沿用你已有的 API 配置。离线测试使用确定性的测试模型，不会请求外部模型服务。
-Unitree 后端标记为真机接入，保留 RPent 的终端要求，请在普通终端中运行机器人 CLI。
+Unitree 保留真机后端的终端要求，请在普通终端运行 CLI。默认使用本地记忆，不下载 HF 语料。
+通信方提供本地端口，默认端点为 `http://127.0.0.1:8115`。完整格式见 [中转 RPC 接口](INTERFACE.zh-CN.md)。
 
-## 启动本地接收端
+```bash
+rpent --robot unitree --planner api --model openai:deepseek-flash \
+  --env-endpoint http://127.0.0.1:8115 \
+  --task '列出在线机器人，并查询机器人1的状态，不发送动作。' \
+  --output-dir ./logs/unitree-status
+```
 
-在仓库根目录的一个终端中执行：
+启动通过 `env.list_robots` 探测服务，不发送无机器人序号的 `healthz`。
+配置 `--robot-index N` 时，还会检查目标在线；未知或离线目标导致启动失败。
+未配置默认目标时，列表为空仍可进入 Planner 做只读查询。
+
+## 等待时间与完成结果
+
+默认按每条动作计算 RPC 等待时间：
+
+```text
+L = hypot(dx_m, dy_m)
+bearing = atan2(dy_m, dx_m)，零位移时取 0
+等待秒数 = 60 + L / 0.07 + (abs(bearing) + abs(arrival_turn_deg × π / 180)) / 0.10
+```
+
+其中包含本体控制预算和 30 秒通信、停止处理余量。例如 `(0.4, 0.3, 30)` 的默认等待约 78.8 秒。
+显式设置 `--env-timeout-s N` 会精确覆盖动作等待时间及服务启动等待预算，过短时仍可能发生超时。
+自动模式的启动等待预算为 10 秒；单次启动探测和状态查询为 1 秒，列表查询为 10 秒。
+启动后的列表校验及默认目标状态检查不计入服务探测预算。
+中转和 WebSocket 层也需允许相应的等待时间。`--planner-timeout-s` 是整个会话的预算，应覆盖所有动作与 LLM 调用。
+
+客户端要求 `received`、`completed`、`stop_acknowledged` 均为布尔值 true，机器人序号和命令回显一致，
+六个运动结果数值均有限，报告及实际位移推算的位置误差不超过 0.07 米，追加转角误差绝对值不超过 3°。
+停止后的近静止状态由本体侧验收，RPent 无独立的传感器验证。
+超时或失败可能发生在部分动作已经执行之后，客户端不自动重发；关闭连接不等于机器人停止。
+
+## 本地模拟测试
+
+随附服务只用于接口测试：模拟在线机器人及理想的完成结果，不连接真实本体、不调用运动 SDK，也不实现 WebSocket 和心跳。
+
+一个终端启动模拟服务：
 
 ```bash
 python -m robots.unitree.env_server \
-  --host 127.0.0.1 --port 8115 \
+  --host 127.0.0.1 --port 8115 --robot-indices 1 2 \
   --commands-file ./logs/unitree-receiver/commands.jsonl
 ```
 
-服务会打印监听地址。每条成功接收的命令都会向文件追加一条 JSON 回执，
-支持的字符串只有 `前进` 和 `后退`。
-
-## 运行 Planner
-
-在另一个终端中激活 RPent 环境后执行：
+另一个终端运行：
 
 ```bash
-rpent --planner api --model openai:deepseek-flash \
-  --robot unitree --task "让机器狗往前走" \
+rpent --robot unitree --planner api --model openai:deepseek-flash \
   --env-endpoint http://127.0.0.1:8115 \
-  --output-dir ./logs/unitree
+  --planner-timeout-s 300 \
+  --task '本地模拟：机器人1到起点前方0.4米、左侧0.3米的位置，停稳后左转30度；完成后机器人2原地左转450度。' \
+  --output-dir ./logs/unitree-multi
 ```
 
-默认接收端地址为 `http://127.0.0.1:8115`，连接上述本地服务时可以省略该参数。
-`--env-timeout-s` 指定服务就绪和命令响应的超时，默认 10 秒。
-Unitree 默认使用本地记忆，不会下载 HF 语料。当前后端支持普通终端运行。
+单目标可增加 `--robot-index 1`，并在任务中指定默认机器人。
+模拟端也支持 `--transport socket`，客户端使用 `socket://127.0.0.1:8115`；生产对接按 HTTP 协议执行。
 
-通过接收端的日志文件确认命令送达：
+模拟回执包含 `mode: "mock"`、`completed: true` 和 `motion_result`；结果为合成数据，不证明真实运动。
+同一机器人忙碌时拒绝新请求，不覆盖或排队；不同机器人可由不同客户端并发请求。
+同一个 Toolkit 内的动作工具仍串行执行，包括针对不同机器人的动作。
 
-```json
-{"command": "前进", "received": true, "sequence": 1, "mode": "mock"}
-```
-
-Planner 输出目录还会生成 `states.json` 和
-`transcript_unitree_<run-id>.json`，其中的工具结果包含回执。
-因为没有测量实际运动，环境终止标志保持 false。
-
-## RPC 接口
-
-业务方法为 `env.execute_command(command)`，参数是上述两个中文字符串之一。
-成功响应必须包含一致的 `command` 和 `received: true`。
-假 Server 还返回 `mode` 和 `sequence`。
-
-适配层直接复用 RPent 的 `RpcClient` 和 `RpcFacade`。
-命令接口不包含 Gym 观测元组，也不会在连接时复位环境。
-后续明确运动和停止行为后，硬件侧 Server 可以实现相同方法；随附的 Server 始终只模拟接收。
-
-默认使用 HTTP，也支持 socket RPC：
-
-```bash
-python -m robots.unitree.env_server --transport socket --port 8115
-rpent --planner api --model openai:deepseek-flash \
-  --robot unitree --task "让机器狗往后退" \
-  --env-endpoint socket://127.0.0.1:8115 \
-  --output-dir ./logs/unitree-backward
-```
+输出目录包含 `states.json` 和 `transcript_unitree_<run-id>.json`。
+状态保留 `acknowledged_commands`，并增加 `completed_commands`、`completed_by_robot`；完整运动结果在动作记录中。
+`validation_scope` 为 `reported_motion_completion`。单步完成不自动把整个任务或物理场景标记为成功。
 
 ## 本地检查
-
-安装项目已有的测试依赖后运行：
 
 ```bash
 pip install -e ".[test]"
 python -m pytest tests/unit_tests/robots/unitree -v
 ```
 
-`test_rpc_loopback.py` 使用真实的 localhost HTTP/socket 服务，需要环境允许创建和绑定网络 Socket。
-其余测试覆盖工具声明、JSON 请求与响应处理、服务端分发、回执，以及使用原生 API 规划器和脚本化测试模型的公共 CLI。
-这些测试替换了网络 I/O，不代表已验证真实 Socket 连接。
+测试覆盖参数边界、完成和停止回执、误差验收、自动等待时间、失败清理、状态记录及脚本化 API Planner 的公共 CLI。
+真实 localhost HTTP/socket 测试还检查机器人级忙碌拒绝、不同机器人并发以及超时后远端仍可能完成。
+测试不消耗真实模型 API，不需要机器人或 GPU。

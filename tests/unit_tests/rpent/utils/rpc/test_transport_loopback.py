@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import pickle
 import socket
@@ -53,6 +54,16 @@ PROXY_ENVIRONMENT_VARIABLES = (
     "all_proxy",
     "no_proxy",
 )
+
+
+@pytest.mark.parametrize("status", [None, 0, 1, "true", "false"])
+def test_http_rpc_rejects_non_boolean_success_envelopes(monkeypatch, status):
+    body = json.dumps({"ok": status, "result": {"completed": True}}).encode()
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(body)
+    )
+    with pytest.raises(RpcError, match="ok must be a boolean"):
+        HttpRpcClient("http://gateway.test:8115").call("env.execute_command")
 
 
 def test_robodojo_camera_meta_roundtrip(transport, make_server_and_client):

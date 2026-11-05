@@ -30,7 +30,7 @@ ROBOT_HELP_CASES = [
     ("libero", ("--suite", "--task", "--libero-type")),
     ("robocasa", ("--task-name", "--split", "--hi-res")),
     ("robotwin", ("--task-name", "--task-config", "--robotwin-assets-path")),
-    ("unitree", ("--task", "--env-endpoint", "--env-timeout-s")),
+    ("unitree", ("--task", "--env-endpoint", "--env-timeout-s", "--robot-index")),
 ]
 
 

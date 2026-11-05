@@ -1,97 +1,138 @@
-# Unitree command RPC prototype
+# Unitree multi-robot gateway RPC integration
 
 [简体中文](README.zh-CN.md)
 
-This backend connects natural-language tasks to two planner tools:
-`move_forward()` sends `前进`, and `move_backward()` sends `后退`.
-The included mock server records the command strings and acknowledges receipt.
-This prototype verifies command delivery; it does not implement robot motion,
-ROS2 control, Docker setup, VLA inference, or camera observations.
+This backend connects to a local HTTP RPC gateway, lists online robots, and waits
+for synchronous `dis_move` completion. The communication programs own body-initiated
+WebSocket connections, registration, heartbeats, and per-robot busy admission.
+RPent reuses its RPC clients, tool scheduler, and state artifacts without calling
+a body SDK directly.
 
-## Requirements
+## Tools and motion semantics
 
-Install RPent's base dependencies in the active environment:
+| Tool | Purpose |
+| --- | --- |
+| `list_robots()` | List online robots |
+| `get_robot_status(robot_index=None)` | Query recent robot connectivity |
+| `execute_command(dx_m, dy_m, arrival_turn_deg, robot_index=None)` | Wait for a relative move, stopping, and final acceptance |
+
+An omitted index uses `--robot-index`. Without a default, specify the target in
+each call. An explicit index may select another robot; the default is not an
+access restriction.
+
+`dx_m` and `dy_m` are target offsets in meters in the body frame at the start of
+this move: +x forward, +y left. The body turns toward that fixed target and walks
+forward, stops, then turns `arrival_turn_deg` relative to its actual arrival
+heading (+left). A rear target requires turning around and walking forward,
+not direct backward walking; its full hardware execution has not passed testing.
+Zero displacement turns in place. Preserve 450-degree turns without normalization.
+All three values must be finite numbers and combined displacement must be at most
+5 m. Speed, duration, waypoint lists, and remote stop commands are not exposed.
+The 5 m limit is an input bound, not evidence of full-distance hardware testing.
+
+The tool constructs `{"type":"dis_move","payload":{...}}` internally. Tasks can
+specify relative movement directly, such as going 0.4 m forward and 0.3 m left,
+then turning left 30 degrees. Supply enough distance and target information.
+
+## Requirements and read-only queries
+
+Install base dependencies in the active environment and configure your planner API:
 
 ```bash
 pip install -e .
 ```
 
-The planner example uses your existing API configuration. The offline tests use
-a deterministic test model and do not contact an external model service.
-Run the robot CLI in a normal terminal: the Unitree backend is marked as a
-real-robot integration and keeps RPent's terminal requirement.
+Use a normal terminal: Unitree retains the physical-robot terminal requirement.
+It defaults to local memory without an HF corpus download. The communication team
+provides the local port; the default is `http://127.0.0.1:8115`. See the
+[RPC interface specification (Chinese)](INTERFACE.zh-CN.md).
 
-## Start the local receiver
+```bash
+rpent --robot unitree --planner api --model openai:deepseek-flash \
+  --env-endpoint http://127.0.0.1:8115 \
+  --task 'List online robots and query robot 1 status. Do not send actions.' \
+  --output-dir ./logs/unitree-status
+```
 
-From the repository root, run this in one terminal:
+Startup probes `env.list_robots` without an unbound `healthz` call. With
+`--robot-index N`, the target must also be online; unknown or offline targets fail
+startup. Without a default target, an empty list still allows read-only tasks.
+
+## Wait budgets and completion
+
+By default each command gets a calculated RPC wait:
+
+```text
+L = hypot(dx_m, dy_m)
+bearing = atan2(dy_m, dx_m), or 0 for zero displacement
+wait_seconds = 60 + L / 0.07 + (abs(bearing) + abs(arrival_turn_deg * pi / 180)) / 0.10
+```
+
+This includes the body control budget plus 30 seconds for communication and
+stopping. For `(0.4, 0.3, 30)` the wait is about 78.8 seconds. An explicit
+`--env-timeout-s N` overrides the command wait and service readiness budget exactly;
+an insufficient override can still time out. Automatic readiness uses 10 seconds.
+Individual startup probes and status queries use 1 second; list queries use 10.
+Post-readiness list validation and default-target checks are outside that budget.
+Gateway and WebSocket waits must also cover execution. `--planner-timeout-s`
+covers the whole session, including all moves and LLM calls.
+
+The client requires boolean `received`, `completed`, and `stop_acknowledged` to be
+true, matching target and command, and six finite motion-result numbers. Both
+reported errors and errors derived from actual displacement/turn must meet the
+default 0.07 m position and 3 degree arrival-turn tolerances. The body verifies
+near-rest state; RPent has no independent sensor verification. A timeout or failure
+may follow partial motion. The client does not automatically resend, and
+connection closure does not stop the robot.
+
+## Local mock test
+
+The included server simulates online robots and ideal completion measurements.
+It has no physical connection, SDK calls, WebSocket implementation, or heartbeats.
+
+Start it in one terminal:
 
 ```bash
 python -m robots.unitree.env_server \
-  --host 127.0.0.1 --port 8115 \
+  --host 127.0.0.1 --port 8115 --robot-indices 1 2 \
   --commands-file ./logs/unitree-receiver/commands.jsonl
 ```
 
-The server prints its listening address. Each accepted command appends a JSON
-receipt to the commands file. It accepts only `前进` and `后退`.
-
-## Run the planner
-
-In another terminal, with RPent's environment activated:
+In another terminal:
 
 ```bash
-rpent --planner api --model openai:deepseek-flash \
-  --robot unitree --task "让机器狗往前走" \
+rpent --robot unitree --planner api --model openai:deepseek-flash \
   --env-endpoint http://127.0.0.1:8115 \
-  --output-dir ./logs/unitree
+  --planner-timeout-s 300 \
+  --task 'Local mock: robot 1 goes to 0.4 m forward and 0.3 m left, stops and turns left 30 degrees; after completion robot 2 turns left 450 degrees in place.' \
+  --output-dir ./logs/unitree-multi
 ```
 
-The endpoint defaults to `http://127.0.0.1:8115`, so that flag is optional for
-this local receiver. `--env-timeout-s` sets the readiness and command response
-timeout, defaulting to 10 seconds. Unitree defaults to local memory and does not
-download an HF corpus. The backend currently supports plain terminal runs.
+For one target, add `--robot-index 1` and refer to the default robot in the task.
+The mock also supports `--transport socket` and a `socket://127.0.0.1:8115` client
+endpoint. Production communication uses the documented HTTP transport.
 
-Verify the receiver's journal, not just the planner's final statement:
+Mock receipts include `mode: "mock"`, `completed: true`, and `motion_result`.
+These are synthetic values, not evidence of hardware motion. Busy robots reject
+new commands without replacing or queuing them; different clients may move
+different simulated robots concurrently. A single Toolkit still serializes all
+motion tools, including moves for different robots.
 
-```json
-{"command": "前进", "received": true, "sequence": 1, "mode": "mock"}
-```
-
-The planner output directory contains `states.json` and
-`transcript_unitree_<run-id>.json`. Their tool results include the receipt.
-Environment termination remains false because physical motion was not measured.
-
-## RPC contract
-
-The business method is `env.execute_command(command)`. Its argument is exactly
-one of the two Chinese strings. A successful response must include the same
-`command` and `received: true`. The mock also returns `mode` and `sequence`.
-
-The adapter uses RPent's existing `RpcClient` and `RpcFacade` directly. The
-command-only contract has no Gym observation tuple or connection-time reset.
-A hardware-side server can implement this same method when its motion and
-stopping behavior have been defined. The included server remains a mock.
-
-HTTP is the default transport; socket RPC is also available:
-
-```bash
-python -m robots.unitree.env_server --transport socket --port 8115
-rpent --planner api --model openai:deepseek-flash \
-  --robot unitree --task "让机器狗往后退" \
-  --env-endpoint socket://127.0.0.1:8115 \
-  --output-dir ./logs/unitree-backward
-```
+Outputs include `states.json` and `transcript_unitree_<run-id>.json`. State retains
+`acknowledged_commands` and adds `completed_commands` and `completed_by_robot`;
+full motion results appear in action records. The `validation_scope` is
+`reported_motion_completion`. One completed action does not automatically mark
+the whole task or physical scene as solved.
 
 ## Local checks
-
-Install the existing test dependencies, then run:
 
 ```bash
 pip install -e ".[test]"
 python -m pytest tests/unit_tests/robots/unitree -v
 ```
 
-`test_rpc_loopback.py` uses actual localhost HTTP/socket servers and requires
-permission to create and bind network sockets. The other tests cover command
-schemas, JSON request/response handling, server dispatch, receipts, and the
-public CLI with the native API planner and a scripted test model. Those tests
-replace network I/O and do not establish real socket connectivity.
+Tests cover input bounds, completion and stop receipts, error acceptance, calculated
+waits, startup cleanup, state recording, and the public CLI with a scripted API
+planner. Real localhost HTTP/socket tests also cover per-robot busy rejection,
+independent robots, and remote completion after client timeout. No external model,
+hardware, or GPU is required.

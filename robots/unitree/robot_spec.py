@@ -24,6 +24,11 @@ from typing import Any
 from uuid import uuid4
 
 from robots.unitree.prompt_bundle import system_prompt, user_prompt
+from robots.unitree.protocol import (
+    DEFAULT_QUERY_TIMEOUT_S,
+    VALIDATION_SCOPE,
+    validate_robot_index,
+)
 from rpent.dashboard.events import DashboardEventSink
 from rpent.memory import MemoryManager
 from rpent.robots.prompt_bundle import PromptBundle
@@ -71,13 +76,19 @@ def _add_cli_args(parser: argparse.ArgumentParser, use_dashboard: bool) -> None:
     parser.add_argument(
         "--env-endpoint",
         default="http://127.0.0.1:8115",
-        help="Existing Unitree command RPC server (HTTP or socket).",
+        help="Existing Unitree gateway RPC server (HTTP or socket).",
+    )
+    parser.add_argument(
+        "--robot-index",
+        type=int,
+        default=None,
+        help="Default gateway robot index; omit to select a robot in each tool call.",
     )
     parser.add_argument(
         "--env-timeout-s",
         type=float,
-        default=10.0,
-        help="Server readiness and command RPC timeout in seconds (default: 10).",
+        default=None,
+        help="Override command RPC and readiness waits in seconds; by default, command waits use the motion budget plus 30 s and readiness uses 10 s.",
     )
 
 
@@ -86,9 +97,13 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
     if not task:
         raise ValueError("--task must contain a task description")
     if args.memory_profile != "local":
-        raise ValueError("Unitree command delivery requires --memory-profile local")
-    if not math.isfinite(args.env_timeout_s) or args.env_timeout_s <= 0:
+        raise ValueError("Unitree gateway runs require --memory-profile local")
+    if args.env_timeout_s is not None and (
+        not math.isfinite(args.env_timeout_s) or args.env_timeout_s <= 0
+    ):
         raise ValueError("--env-timeout-s must be finite and greater than zero")
+    if args.robot_index is not None:
+        validate_robot_index(args.robot_index)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_dir = Path(
         args.output_dir or get_repo_root() / "logs" / f"{timestamp}_unitree"
@@ -104,12 +119,14 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
         prompt_vars={
             "task": task,
             "env_endpoint": args.env_endpoint,
+            "robot_index": args.robot_index,
             "memory_dir": str(memory_dir),
         },
         task_desc={
             "task": task,
             "env_endpoint": args.env_endpoint,
-            "validation_scope": "command_delivery",
+            "robot_index": args.robot_index,
+            "validation_scope": VALIDATION_SCOPE,
         },
     )
 
@@ -129,9 +146,31 @@ def _init_runtime(
     if not selected:
         return [], {}
     rpc = make_rpc_client(args.env_endpoint)
+    env = UnitreeEnvClient(
+        rpc, timeout_s=args.env_timeout_s, robot_index=args.robot_index
+    )
+
+    def check_robots() -> None:
+        env.list_robots()
+        if args.robot_index is not None:
+            status = env.get_robot_status()
+            if status["status"] != "online":
+                raise RuntimeError(f"robot {args.robot_index} is offline")
+
     try:
-        try_wait_server({}, dashboard_events, "env", rpc, None, args.env_timeout_s)
+        try_wait_server(
+            {},
+            dashboard_events,
+            "env",
+            rpc,
+            None,
+            args.env_timeout_s
+            if args.env_timeout_s is not None
+            else DEFAULT_QUERY_TIMEOUT_S,
+            probe_method="env.list_robots",
+            post_fn=check_robots,
+        )
     except Exception:
         rpc.close()
         raise
-    return [], {"env": UnitreeEnvClient(rpc, timeout_s=args.env_timeout_s)}
+    return [], {"env": env}

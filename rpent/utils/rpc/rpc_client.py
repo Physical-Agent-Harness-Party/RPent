@@ -88,6 +88,8 @@ def check_response(response: Any, method: str) -> Any:
     """Validate RPC response envelope; raise ``RpcError`` on failure, return result."""
     if not isinstance(response, dict):
         raise RpcError(method, f"bad response type: {type(response).__name__}")
+    if type(response.get("ok")) is not bool:
+        raise RpcError(method, "RPC response ok must be a boolean")
     if not response.get("ok"):
         raise RpcError(
             method,

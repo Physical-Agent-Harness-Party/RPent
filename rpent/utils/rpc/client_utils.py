@@ -62,8 +62,12 @@ def wait_for_ready(
     timeout_s: float = 300.0,
     poll_interval_s: float = 0.5,
     daemon: "ProcessDaemon | None" = None,
+    probe_method: str = "healthz",
 ) -> None:
-    """Poll ``client.call("healthz")`` until it succeeds or ``timeout_s`` elapses.
+    """Poll a no-argument RPC until it succeeds or ``timeout_s`` elapses.
+
+    ``probe_method`` defaults to ``healthz``. Gateways whose health method
+    requires a robot identifier can use a service-level query instead.
 
     If ``daemon`` is given and its subprocess exits before becoming ready,
     fail fast with ``RuntimeError`` (carrying the exit code) instead of
@@ -80,13 +84,17 @@ def wait_for_ready(
         if daemon is not None:
             rc = daemon.poll()
             if rc is not None:
-                detail = last_err if last_err is not None else "no healthz attempt yet"
+                detail = (
+                    last_err
+                    if last_err is not None
+                    else f"no {probe_method} attempt yet"
+                )
                 raise RuntimeError(
                     f"{daemon.name} exited with code {rc} before becoming "
-                    f"ready; check its log. last healthz error: {detail}"
+                    f"ready; check its log. last {probe_method} error: {detail}"
                 )
         try:
-            client.call("healthz", timeout_s=1.0)
+            client.call(probe_method, timeout_s=1.0)
         except Exception as exc:
             last_err = exc
             time.sleep(poll_interval_s)
