@@ -34,6 +34,7 @@ EXPECTED_ROBOTS = (
     "dual_franka",
     "franka",
     "libero",
+    "microduck",
     "robocasa",
     "robodojo",
     "robotwin",
@@ -41,6 +42,7 @@ EXPECTED_ROBOTS = (
 )
 
 PROMPT_VARIABLES = {
+    "microduck": {"task": "Walk forward, then backward", "memory_dir": "/memory"},
     "yam": {
         "task_id": 1,
         "seed": 0,
@@ -198,6 +200,9 @@ def test_dashboard_metadata_has_consistent_fields_and_runtime_components(
     robot_name: str,
 ) -> None:
     spec = get_robot_spec(robot_name)
+    if robot_name == "microduck":
+        assert spec.resolve_dashboard is None
+        return
     parser = ArgumentParser()
     spec.add_cli_args(parser, use_dashboard=True)
     dashboard = spec.resolve_dashboard(parser.parse_args([]))
