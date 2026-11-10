@@ -60,11 +60,13 @@ class UnitreeToolkit(Toolkit):
             pass
         self._publish_step(self.state.get())
 
+    # 2. list_robots()：给 LLM 查询在线机器人
     @tool(readonly=True)
     def list_robots(self) -> ToolResult:
         """List currently online robots and their gateway-assigned indices."""
         return ToolResult(data=self._env.list_robots())
 
+    # 3. get_robot_status()：给 LLM 查询指定机器人的状态/
     @tool(readonly=True)
     def get_robot_status(self, robot_index: int | None = None) -> ToolResult:
         """Query a robot's last known connectivity, without moving it.
@@ -74,6 +76,7 @@ class UnitreeToolkit(Toolkit):
         """
         return ToolResult(data=self._env.get_robot_status(robot_index))
 
+    # 4. execute_command()：把 LLM 参数转换为运动命令
     @tool
     def execute_command(
         self,
@@ -102,6 +105,8 @@ class UnitreeToolkit(Toolkit):
             data=self._env.execute_command(command, robot_index=robot_index)
         )
 
+    # 5. get_env_state()：记录动作结果和完成次数
+    # 这个方法没有 @tool，不是由 LLM 直接调用，而是公共 Toolkit 在执行非只读工具之后调用。
     def get_env_state(
         self,
         *,

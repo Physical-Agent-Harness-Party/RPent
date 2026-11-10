@@ -36,6 +36,7 @@ pip install -e .
 
 Unitree 保留真机后端的终端要求，请在普通终端运行 CLI。默认使用本地记忆，不下载 HF 语料。
 通信方提供本地端口，默认端点为 `http://127.0.0.1:8115`。完整格式见 [中转 RPC 接口](INTERFACE.zh-CN.md)。
+连接真实本体时，按 [真实机器人联调测试指南](REAL_ROBOT_TEST.zh-CN.md) 完成只读检查、单次动作、LLM 调用及多机器人路由测试。
 
 ```bash
 rpent --robot unitree --planner api --model openai:deepseek-flash \

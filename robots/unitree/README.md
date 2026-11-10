@@ -46,6 +46,8 @@ Use a normal terminal: Unitree retains the physical-robot terminal requirement.
 It defaults to local memory without an HF corpus download. The communication team
 provides the local port; the default is `http://127.0.0.1:8115`. See the
 [RPC interface specification (Chinese)](INTERFACE.zh-CN.md).
+For physical deployment, follow the [real-robot test guide (Chinese)](REAL_ROBOT_TEST.zh-CN.md)
+for read-only checks, one motion, LLM tool calls, and multi-robot routing.
 
 ```bash
 rpent --robot unitree --planner api --model openai:deepseek-flash \
