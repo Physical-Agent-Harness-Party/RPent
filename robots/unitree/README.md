@@ -8,6 +8,8 @@ simulation HTTP services; it does not connect to the gateway.
 
 ## MuJoCo navigation
 
+For setup, a complete two-waypoint patrol command, `--max-turns` termination,
+and result inspection, see the [MuJoCo patrol guide (Chinese)](MUJOCO_USAGE.zh-CN.md).
 The external A* service's name-based API and deployment examples are documented
 in the [navigation service reference (Chinese)](NAVIGATION.zh-CN.md).
 

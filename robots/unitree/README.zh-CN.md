@@ -7,6 +7,7 @@
 
 ## MuJoCo 导航模式
 
+两点持续往返的环境配置、完整启动命令、`--max-turns` 结束条件与结果检查见 [MuJoCo 两点往返使用指南](MUJOCO_USAGE.zh-CN.md)。
 外部 A* 服务的名称点位接口与部署示例见 [导航服务参考](NAVIGATION.zh-CN.md)。
 
 安装 RPent 基础依赖并配置 Planner API 即可。导航与仿真运行在服务端，RPent 客户端无需本地安装 MuJoCo 或 Torch。
