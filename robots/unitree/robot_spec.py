@@ -94,11 +94,18 @@ def get_toolkit(
     """Bind the runtime client to the planner's movement tools."""
     if config.prompt_vars.get("unitree_mode", "gateway") == "mujoco":
         from robots.unitree.mujoco_toolkit import UnitreeMujocoToolkit
+        from robots.unitree.navigation_client import NavigationClient
+        from robots.unitree.simulation_client import SimulationClient
 
+        # Build fresh clients per session: toolkit.close() closes its own
+        # clients at session end, so shared objects break the next handoff.
+        nav = NavigationClient(config.prompt_vars["nav_endpoint"])
+        sim = SimulationClient(config.prompt_vars["sim_endpoint"], timeout_s=5.0)
         explore = mode == "exploration"
         try:
             return UnitreeMujocoToolkit(
-                **runtime_kwargs,
+                nav=nav,
+                sim=sim,
                 dashboard_events=dashboard_events,
                 memory=MemoryManager(
                     config.prompt_vars["memory_dir"],
@@ -110,8 +117,8 @@ def get_toolkit(
                 navigation_timeout_s=config.prompt_vars["navigation_timeout_s"],
             )
         except Exception:
-            for client in runtime_kwargs.values():
-                client.close()
+            nav.close()
+            sim.close()
             raise
 
     from robots.unitree.toolkit import UnitreeToolkit
