@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import threading
 import time
@@ -52,6 +53,7 @@ class UnitreeMujocoToolkit(Toolkit):
         dashboard_events: DashboardEventSink,
         memory: MemoryManager,
         state_output_dir: Path,
+        recipe_output_dir: Path | None = None,
         navigation_timeout_s: float = 300.0,
         poll_interval_s: float = 5.0,
     ) -> None:
@@ -75,6 +77,9 @@ class UnitreeMujocoToolkit(Toolkit):
         self._last_walk: dict[str, Any] | None = None
         self._last_error: str | None = None
         self._stop_error: str | None = None
+        self._recipe_dir = Path(recipe_output_dir or state_output_dir)
+        self._recipe_entries: list[dict[str, Any]] = []
+        self._finish_status: str | None = None
         super().__init__(
             dashboard_events=dashboard_events,
             memory=memory,
@@ -472,7 +477,10 @@ class UnitreeMujocoToolkit(Toolkit):
             return ToolResult(
                 data={"error": "navigation has not completed successfully"}
             )
-        return ToolResult(data={"_finish": True, "status": status, "summary": summary})
+        self._finish_status = status
+        return ToolResult(
+            data={"_finish": True, "status": status, "summary": summary}
+        )
 
     def get_env_state(
         self, *, command: dict[str, Any], result: dict[str, Any], elapsed_s: float
@@ -480,6 +488,9 @@ class UnitreeMujocoToolkit(Toolkit):
         """Record navigation outcomes without inventing physical task success."""
         if result.get("error"):
             self._last_error = str(result["error"])
+        self._recipe_entries.append(
+            {"command": command, "result": result, "elapsed_s": elapsed_s}
+        )
         with self.state.record_step(
             state=self._state_summary(),
             command=command,
@@ -489,6 +500,19 @@ class UnitreeMujocoToolkit(Toolkit):
         ) as step:
             pass
         return ToolResult(data={**result, "step": step})
+
+    def solved(self) -> bool:
+        """Task success: the planner finished with success after a verified arrival."""
+        return self._finish_status == "success" and self._completed > 0
+
+    def write_recipe(self, recipe_tag: str) -> str:
+        """Write the executed navigation steps as a JSONL recipe."""
+        path = self._recipe_dir / f"{recipe_tag}_recipe.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            for entry in self._recipe_entries:
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return str(path)
 
     def cancel_active_and_wait(self) -> None:
         """Request remote stopping before waiting for the local tool to drain."""

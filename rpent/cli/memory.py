@@ -44,6 +44,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     subparsers.add_parser("validate", help="Validate published memory leaves.")
     subparsers.add_parser("build-index", help="Rebuild MEMORY.md.")
+    resolve = subparsers.add_parser(
+        "resolve-conflicts",
+        help="Merge _internal/conflicts/*.md into canonical notes with an LLM.",
+    )
+    resolve.add_argument("--base-url", default="https://api.deepseek.com/v1")
+    resolve.add_argument("--model", default="deepseek-flash")
+    resolve.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    resolve.add_argument("--apply", action="store_true")
+    resolve.add_argument("--limit", type=int, default=None)
+    resolve.add_argument("--timeout", type=float, default=120.0)
     return parser
 
 
@@ -58,6 +68,27 @@ def main() -> int:
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
+    if args.command == "resolve-conflicts":
+        import os as _os
+
+        from rpent.memory.resolve import resolve_conflicts
+
+        api_key = _os.environ.get(args.api_key_env, "")
+        if not api_key:
+            print(f"missing API key in ${args.api_key_env}")
+            return 2
+        results = resolve_conflicts(
+            args.memory_dir,
+            base_url=args.base_url,
+            model=args.model.split(":", 1)[-1],
+            api_key=api_key,
+            apply=args.apply,
+            timeout=args.timeout,
+            limit=args.limit,
+        )
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        return 0 if all(r["status"] in ("merged", "adopted") for r in results) else 1
+
     if args.command == "validate":
         problems = manager.validate()
         if problems:

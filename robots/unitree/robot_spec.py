@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 from datetime import datetime
 from pathlib import Path
@@ -39,11 +40,41 @@ from rpent.utils.daemon import ProcessDaemon
 from rpent.utils.rpc import make_rpc_client
 
 
+_EXPLORE_INSTRUCTIONS = """
+EXPLORE MODE (build memory for later runs).
+After the navigation task is verified successful:
+1. Write ONE global lesson per file into {{memory_inbox}} with write_text_file:
+   `new_global_<kind>_<slug>.md`, kind in primitive|perception|strategy|failure.
+   Frontmatter:
+     ---
+     id: <slug>
+     scope: global
+     kind: <kind>
+     title: <one imperative sentence>
+     applies_when: <when a future agent should open this>
+     symptom: [<search words>]
+     evidence:
+       cells: [{{recipe_tag}}]
+       attempts: 1
+     confidence: single-shot
+     ---
+   Body: one-sentence claim, **Why:**, **How to apply:**, **Falsify:**.
+   Only record mechanisms you actually observed (map geometry, A* behaviour,
+   timeouts, replanning rules). Do not invent causes.
+2. Write the audit JSON to `{{output_dir}}/{{recipe_tag}}.json` BEFORE finish:
+   {"task": "...", "map_id": "...", "waypoints": [...], "attempts": 1,
+    "final_pose": {...}, "solved": true, "notes": "..."}
+3. Then call finish(status="success").
+If the task is not solved, do not write memory; report and finish with failure.
+"""
+
+
 def get_robot_spec() -> RobotSpec:
     """Register a terminal-only Unitree backend with free-form task input."""
     return RobotSpec(
         name="unitree",
-        is_real_robot=True,
+        is_real_robot=False,
+        supports_exploration=True,
         prompts=PromptBundle(system=system_prompt, user=user_prompt),
         add_cli_args=_add_cli_args,
         parse_config=_parse_config,
@@ -56,17 +87,26 @@ def get_toolkit(
     runtime_kwargs: dict[str, Any],
     dashboard_events: DashboardEventSink,
     config: RunConfig,
+    mode: str = "evaluation",
+    attempts_per_session: int = 0,
+    state_output_dir: Path | str | None = None,
 ):
     """Bind the runtime client to the planner's movement tools."""
     if config.prompt_vars.get("unitree_mode", "gateway") == "mujoco":
         from robots.unitree.mujoco_toolkit import UnitreeMujocoToolkit
 
+        explore = mode == "exploration"
         try:
             return UnitreeMujocoToolkit(
                 **runtime_kwargs,
                 dashboard_events=dashboard_events,
-                memory=MemoryManager(config.prompt_vars["memory_dir"]),
-                state_output_dir=config.output_dir,
+                memory=MemoryManager(
+                    config.prompt_vars["memory_dir"],
+                    memory_access="inbox_write" if explore else "read_only",
+                    inbox_cell_tag=config.recipe_tag if explore else None,
+                ),
+                state_output_dir=state_output_dir or config.output_dir,
+                recipe_output_dir=config.output_dir,
                 navigation_timeout_s=config.prompt_vars["navigation_timeout_s"],
             )
         except Exception:
@@ -86,6 +126,14 @@ def get_toolkit(
 
 def _add_cli_args(parser: argparse.ArgumentParser, use_dashboard: bool) -> None:
     parser.set_defaults(memory_profile="local")
+    parser.add_argument(
+        "--auto-merge-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Merge exploration drafts into layered memory (default: enabled).",
+    )
+    parser.add_argument("--explore-sessions", type=int, default=1)
+    parser.add_argument("--explore-attempts-per-session", type=int, default=1)
     parser.add_argument(
         "--task", required=not use_dashboard, help="Natural-language robot task."
     )
@@ -173,14 +221,20 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
             sim_endpoint=args.sim_endpoint,
             navigation_timeout_s=args.navigation_timeout_s,
         )
+    # 同一任务的多次运行共享 cell 标签，便于证据合并
+    recipe_tag = "unitree_" + hashlib.sha1(task.encode("utf-8")).hexdigest()[:8]
     return RunConfig(
-        recipe_tag=f"unitree_{uuid4().hex[:12]}",
+        recipe_tag=recipe_tag,
         output_dir=output_dir,
         prompt_vars={
             "task": task,
             "env_endpoint": args.env_endpoint,
             "robot_index": args.robot_index,
             "memory_dir": str(memory_dir),
+            "recipe_tag": recipe_tag,
+            "output_dir": str(output_dir),
+            "memory_inbox": str(memory_dir / "_internal" / "inbox" / recipe_tag),
+            "explore_instructions": _EXPLORE_INSTRUCTIONS if args.explore else "",
             **mode_vars,
         },
         task_desc={

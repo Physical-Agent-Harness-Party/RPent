@@ -50,7 +50,11 @@ The simulator must already be running; do not restart it or stop other controlle
 All map identities must agree. This is simulation navigation, not physical-robot
 motion verification. For query-only tasks, finish after returning the information.
 After every requested destination is reached, finish with status=success and
-summarize destinations and errors. These tools use HTTP clients, not shell commands."""
+summarize destinations and errors. These tools use HTTP clients, not shell commands.""" + (
+        "\n\n" + str((variables or {}).get("explore_instructions"))
+        if (variables or {}).get("explore_instructions")
+        else ""
+    )
     return """You control relative Unitree moves through a multi-robot gateway.
 Use list_robots to discover online robot indices and get_robot_status to query
 one robot. Online means recent connectivity, not permission or ability to move.
