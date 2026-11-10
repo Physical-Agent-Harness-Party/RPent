@@ -35,14 +35,12 @@ RESULT_NUMBER_FIELDS = (
 )
 
 
-# 检查机器人编号是否为正整数，排除布尔值。
 def validate_robot_index(robot_index: int) -> None:
     """Require a positive integer robot identifier, excluding booleans."""
     if type(robot_index) is not int or robot_index <= 0:
         raise ValueError("robot_index must be a positive integer")
 
 
-# 检查数值是否有限，排除布尔值，并转换为浮点数。
 def _finite_number(value: Any, field: str) -> float:
     if type(value) not in (int, float):
         raise ValueError(f"{field} must be a finite number")
@@ -55,7 +53,6 @@ def _finite_number(value: Any, field: str) -> float:
     return number
 
 
-# 检查 dis_move 命令格式、参数和 5 米合成位移上限。
 def validate_command(command: dict[str, Any]) -> None:
     """Require the documented dis_move payload and a displacement of at most 5 m."""
     if not isinstance(command, dict):
@@ -75,7 +72,6 @@ def validate_command(command: dict[str, Any]) -> None:
         raise ValueError("command displacement must not exceed 5 m in total")
 
 
-# 根据位移和转角估算 RPC 等待时间，包含 30 秒通信余量。
 def motion_timeout_s(command: dict[str, Any]) -> float:
     """Return the documented control budget plus 30 s for a validated command."""
     payload = command["payload"]
@@ -88,7 +84,6 @@ def motion_timeout_s(command: dict[str, Any]) -> float:
     )
 
 
-# 检查运动结果中的停止确认、有限数值和位置及转角误差。
 def validate_motion_result(motion: Any, command: dict[str, Any]) -> None:
     """Check reported completion data against the default acceptance tolerances."""
     if not isinstance(motion, dict):

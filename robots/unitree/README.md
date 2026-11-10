@@ -8,11 +8,13 @@ simulation HTTP services; it does not connect to the gateway.
 
 ## MuJoCo navigation
 
+The external A* service's name-based API and deployment examples are documented
+in the [navigation service reference (Chinese)](NAVIGATION.zh-CN.md).
+
 Install RPent's base dependencies and configure a planner API. Navigation and
 simulation run on the service machine; the RPent client does not need local
-MuJoCo or Torch. Use a normal terminal: this initial integration retains
-Unitree's CLI/TTY requirement and does not support Dashboard, interactive, or
-exploration modes.
+MuJoCo or Torch. Unitree requires a normal terminal with a TTY and does not
+support Dashboard, interactive, or exploration modes.
 
 The A* service and simulation control service must already be running with the
 same `map_id` and `map_version`. Start the simulator on the service machine

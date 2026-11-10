@@ -3,12 +3,14 @@
 [English](README.md)
 
 默认 `--unitree-mode gateway` 使用下文的多机器人 `dis_move` 协议。
-新增 `--unitree-mode mujoco` 连接外部 A* 规划与仿真控制 HTTP 服务，不连接网关。
+`--unitree-mode mujoco` 连接外部 A* 规划与仿真控制 HTTP 服务，不连接网关。
 
 ## MuJoCo 导航模式
 
+外部 A* 服务的名称点位接口与部署示例见 [导航服务参考](NAVIGATION.zh-CN.md)。
+
 安装 RPent 基础依赖并配置 Planner API 即可。导航与仿真运行在服务端，RPent 客户端无需本地安装 MuJoCo 或 Torch。
-首版沿用 Unitree 的普通终端／TTY 要求，不支持 Dashboard、交互模式或探索模式。
+Unitree 运行需要带 TTY 的普通终端，不支持 Dashboard、交互模式或探索模式。
 
 A* 服务和仿真控制服务应已运行，且 `map_id`、`map_version` 一致；运动前需在服务端启动仿真器。
 Toolkit 不会重启仿真器或停止其他控制程序。一个仿真端点只交给一个 RPent 进程使用：状态响应尚未约定必带任务编号，当前不支持多个调用方共享端点。

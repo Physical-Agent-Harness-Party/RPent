@@ -51,13 +51,11 @@ class UnitreeEnvClient:
         self._timeout_s = timeout_s
         self.robot_index = robot_index
 
-    # _resolve_robot_index()：确定本次操作哪台机器人
     def _resolve_robot_index(self, robot_index: int | None) -> int:
         index = self.robot_index if robot_index is None else robot_index
         validate_robot_index(index)
         return index
 
-    # 3. list_robots()：查询在线机器人
     def list_robots(self) -> dict[str, Any]:
         """Return the sorted online list, rejecting malformed gateway responses."""
         method = "env.list_robots"
@@ -79,7 +77,6 @@ class UnitreeEnvClient:
             previous = robot["robot_index"]
         return result
 
-    # 4. get_robot_status()：查询指定机器人的在线状态
     def get_robot_status(self, robot_index: int | None = None) -> dict[str, Any]:
         """Query one robot; a successful query may report that it is offline."""
         index = self._resolve_robot_index(robot_index)
@@ -95,7 +92,6 @@ class UnitreeEnvClient:
             raise RpcError("healthz", "invalid status for the requested robot")
         return result
 
-    # 5. execute_command()：发送动作，等待并检查完成回执
     def execute_command(
         self, command: dict[str, Any], *, robot_index: int | None = None
     ) -> dict[str, Any]:

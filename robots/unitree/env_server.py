@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import math
@@ -100,7 +101,7 @@ class MockUnitreeEnvFacade(RpcFacade):
             with self._journal_lock:
                 receipt = {
                     "robot_index": robot_index,
-                    "command": json.loads(json.dumps(command, allow_nan=False)),
+                    "command": copy.deepcopy(command),
                     "received": True,
                     "completed": True,
                     "motion_result": motion,
