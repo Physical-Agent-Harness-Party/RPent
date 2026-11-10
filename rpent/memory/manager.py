@@ -76,9 +76,39 @@ def _validate(metadata: dict[str, Any]) -> None:
         raise ValueError("evidence.cells must be a non-empty list")
 
 
+_VARIANTS = ("task", "swap", "lan", "object", "plus", "pro")
+_BASE_FAMILIES = {
+    "libero_object",
+    "libero_goal",
+    "libero_spatial",
+    "libero_10",
+    "libero10",
+}
+
+
+def _normalize_regime(suite: str, regime: str | None) -> str:
+    """Derive the task-family variant from the suite, ignoring bad planner values."""
+    name = (suite or "").strip().lower()
+    value = (regime or "").strip().lower()
+    if name in _BASE_FAMILIES:
+        family_tail = name.split("_")[-1]
+        if value in _VARIANTS and value != family_tail:
+            return value
+        return "task"
+    for variant in _VARIANTS:
+        if name.endswith("_" + variant):
+            return variant
+    return value if value in _VARIANTS else "task"
+
+
 def _canonical_id(path: Path, metadata: dict[str, Any]) -> str:
     if metadata["scope"] == "task-family":
-        return f"task-family_{metadata['suite']}_{metadata['regime']}_t{metadata['task_id']}"
+        regime = _normalize_regime(
+            str(metadata.get("suite", "")), metadata.get("regime")
+        )
+        return (
+            f"task-family_{metadata['suite']}_{regime}_t{metadata['task_id']}"
+        )
     stem = re.sub(r"_draft$", "", path.stem)
     for prefix in (*_PREFIXES, *_KINDS):
         if stem.startswith(prefix):
