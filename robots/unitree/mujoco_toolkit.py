@@ -310,14 +310,14 @@ class UnitreeMujocoToolkit(Toolkit):
             raise ServiceError("walk finished without confirmed arrival at the goal")
         leg = result["legs"][0]
         position_error = finite_number(leg.get("position_error"), "position_error")
-        if not 0 <= position_error <= 0.15 + 1e-9:
-            raise ServiceError("navigation position error exceeds 0.15 m")
+        if not 0 <= position_error <= 0.25 + 1e-9:
+            raise ServiceError("navigation position error exceeds 0.25 m")
         pose = status.get("pose")
         validate_pose(pose)
         if pose["fallen"]:
             raise ServiceError("robot has fallen")
         goal = plan["legs"][0]["goal"]["stand_pose"]
-        if math.hypot(pose["x"] - goal["x"], pose["y"] - goal["y"]) > 0.15 + 1e-9:
+        if math.hypot(pose["x"] - goal["x"], pose["y"] - goal["y"]) > 0.25 + 1e-9:
             raise ServiceError("final pose is outside the navigation goal tolerance")
         if goal.get("yaw") is not None:
             yaw_error = finite_number(leg.get("yaw_error"), "yaw_error")

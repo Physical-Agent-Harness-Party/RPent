@@ -141,6 +141,27 @@ def test_preview_accepts_documented_top_level_success_without_nested_ok(
     assert not toolkit.execute_tool("follow_navigation", {"plan_id": plan_id}).is_error
 
 
+@pytest.mark.parametrize("error_source", ["reported", "pose"])
+@pytest.mark.parametrize(
+    ("position_error", "accepted"), [(0.2, True), (0.25, True), (0.251, False)]
+)
+def test_position_tolerance_checks_reported_error_and_final_pose(
+    toolkit, navigation_services, error_source, position_error, accepted
+):
+    def mutate(result):
+        if error_source == "reported":
+            result["result"]["legs"][0]["position_error"] = position_error
+        else:
+            result["pose"]["x"] += position_error
+
+    navigation_services.state.final_mutator = mutate
+    result = toolkit.execute_tool("follow_navigation", {"plan_id": plan(toolkit)})
+    assert result.is_error == (not accepted), result.data
+    assert toolkit.state.get().state["completed_navigation_goals"] == int(accepted)
+    if accepted:
+        assert result.data["navigation_completed"] is True
+
+
 @pytest.mark.parametrize("failure", ["skipped", "position", "yaw", "fallen"])
 def test_finished_does_not_mean_success(toolkit, navigation_services, failure):
     if failure == "skipped":

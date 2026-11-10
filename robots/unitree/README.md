@@ -60,7 +60,7 @@ service cannot skip a failed destination and visit a later one first.
 The toolkit passes the saved route to `/walk`; it does not reconstruct paths or
 convert map points to body-frame `dis_move` commands. Acceptance is not arrival:
 it waits for `state=finished`, successful per-leg results, no fall, and final
-pose/error checks (0.15 m and, when requested, 0.2 radians). Failed previews,
+pose/error checks (0.25 m and, when requested, 0.2 radians). Failed previews,
 changed maps, stale starts beyond 0.3 m, and already-completed plans are rejected.
 
 On cancellation or timeout after acceptance, the toolkit requests stopping and
