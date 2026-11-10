@@ -1,6 +1,60 @@
-# 宇树多机器人中转 RPC 接入
+# 宇树网关与 MuJoCo 导航接入
 
 [English](README.md)
+
+默认 `--unitree-mode gateway` 使用下文的多机器人 `dis_move` 协议。
+新增 `--unitree-mode mujoco` 连接外部 A* 规划与仿真控制 HTTP 服务，不连接网关。
+
+## MuJoCo 导航模式
+
+安装 RPent 基础依赖并配置 Planner API 即可。导航与仿真运行在服务端，RPent 客户端无需本地安装 MuJoCo 或 Torch。
+首版沿用 Unitree 的普通终端／TTY 要求，不支持 Dashboard、交互模式或探索模式。
+
+A* 服务和仿真控制服务应已运行，且 `map_id`、`map_version` 一致；运动前需在服务端启动仿真器。
+Toolkit 不会重启仿真器或停止其他控制程序。一个仿真端点只交给一个 RPent 进程使用：状态响应尚未约定必带任务编号，当前不支持多个调用方共享端点。
+
+```bash
+rpent --robot unitree --unitree-mode mujoco \
+  --nav-endpoint http://192.168.104.191:8765 \
+  --sim-endpoint http://192.168.104.191:8770 \
+  --planner api --model openai:deepseek-flash \
+  --task '先去广告牌，确认到达后，再去厕所通道。' \
+  --navigation-timeout-s 300 --planner-timeout-s 900 --max-turns 16 \
+  --output-dir ./logs/unitree-navigation
+```
+
+将地址改为当前可达的服务地址。MuJoCo 模式不接受网关参数 `--robot-index` 和 `--env-timeout-s`。
+`--navigation-timeout-s` 是每次行走或独立预演的预算，`--planner-timeout-s` 应覆盖整个任务与模型调用。
+HTTP 请求绕过环境代理，不自动重发运动。
+
+`UnitreeMujocoToolkit` 提供：
+
+| 工具 | 功能 |
+| --- | --- |
+| `list_navigation_goals()` | 查询实际点位名称、编号和站位 |
+| `get_navigation_pose()` | 查询当前地图位姿，单位米、弧度 |
+| `plan_navigation(goals, step=None)` | 从实时位姿规划，返回已保存的 `plan_id` 和摘要 |
+| `preview_navigation(plan_id)` | 独立预演并保存报告 |
+| `follow_navigation(plan_id)` | 提交单目标路线，在 Python 内轮询到停稳和到达验收 |
+| `get_navigation_status()` | 查询服务、位姿和本次导航状态 |
+| `stop_navigation()` | 请求停止本 Toolkit 发起的任务并检查是否结束 |
+
+目标支持点位名称／编号，以及新版规划服务支持的 `{x, y, yaw?}` 对象。旧版服务不支持坐标目标时会返回错误。
+坐标目标省略朝向时，不要求最终朝向。当前不提供场景图查询或仿真运维工具。
+多目标计划可以查看或预演，执行时只接受单目标计划：按“规划一个目标 → 执行 → 验收 → 下一个目标”运行，避免服务跳过失败目标后先访问后面的目标。
+
+Toolkit 将保存的完整路线发送给 `/walk`，不重写路径，也不把地图点直接当成身体坐标 `dis_move`。
+任务接受不等于到达；工具等待 `state=finished`，检查每段到达、未摔倒，以及最终位姿和误差（0.15 米，指定终点朝向时 0.2 弧度）。
+预演失败、地图变化、起点偏移超过 0.3 米或计划已经执行完成时，会拒绝执行该计划。
+
+接受任务后取消或超时，Toolkit 请求停止并查询结束状态。接受响应丢失时，提交状态不确定，不会重发或盲目停止无法识别的任务，需先核对仿真服务。
+停止未确认会保留为错误。普通 `stop_navigation` 工具不能抢占正在执行的排他工具；Planner 取消通过专门的取消钩子先请求远端停止，再等待工具退出。
+
+完整记录保存在 `navigation/plans/`、`navigation/previews/`、`navigation/walks/`。
+`states.json` 记录最近位姿、活动任务、错误和 `completed_navigation_goals`；transcript 保存工具调用。
+导航到达成功见工具返回的 `navigation_completed`。整体 `environment_success` 暂不设置；仿真到达不代表真机运动验证，本模式没有启用 finalizer 或探索能力。
+
+## 网关模式
 
 这个后端通过本地 HTTP RPC 连接通信中转服务，查询在线机器人，并同步执行 `dis_move` 相对移动指令。
 通信程序负责本体主动建立的 WebSocket 连接、注册、心跳和机器人级忙碌判断。

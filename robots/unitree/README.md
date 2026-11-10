@@ -1,6 +1,83 @@
-# Unitree multi-robot gateway RPC integration
+# Unitree gateway and MuJoCo navigation
 
 [简体中文](README.zh-CN.md)
+
+`--unitree-mode gateway` is the default and uses the multi-robot `dis_move`
+protocol described below. `--unitree-mode mujoco` selects the external A* and
+simulation HTTP services; it does not connect to the gateway.
+
+## MuJoCo navigation
+
+Install RPent's base dependencies and configure a planner API. Navigation and
+simulation run on the service machine; the RPent client does not need local
+MuJoCo or Torch. Use a normal terminal: this initial integration retains
+Unitree's CLI/TTY requirement and does not support Dashboard, interactive, or
+exploration modes.
+
+The A* service and simulation control service must already be running with the
+same `map_id` and `map_version`. Start the simulator on the service machine
+before requesting movement. The toolkit does not restart it or stop other
+controllers. Give each simulation endpoint to only one RPent runner: status
+replies are not documented to always carry a task id, so sharing an endpoint
+between runners is unsupported.
+
+```bash
+rpent --robot unitree --unitree-mode mujoco \
+  --nav-endpoint http://192.168.104.191:8765 \
+  --sim-endpoint http://192.168.104.191:8770 \
+  --planner api --model openai:deepseek-flash \
+  --task 'Go to the billboard, verify arrival, then go to the restroom passage.' \
+  --navigation-timeout-s 300 --planner-timeout-s 900 --max-turns 16 \
+  --output-dir ./logs/unitree-navigation
+```
+
+Replace both addresses with the reachable service endpoints. Gateway flags
+`--robot-index` and `--env-timeout-s` are rejected in MuJoCo mode. The
+`--navigation-timeout-s` budget applies to each walk or independent preview;
+`--planner-timeout-s` must cover the complete task and model calls. HTTP requests
+bypass environment proxies and do not automatically retry movements.
+
+`UnitreeMujocoToolkit` exposes:
+
+| Tool | Behavior |
+| --- | --- |
+| `list_navigation_goals()` | Read live waypoint names, indices, and standing poses |
+| `get_navigation_pose()` | Read the current map-frame pose (meters and radians) |
+| `plan_navigation(goals, step=None)` | Plan from a fresh pose; return a saved `plan_id` and summary |
+| `preview_navigation(plan_id)` | Preview independently and retain its report |
+| `follow_navigation(plan_id)` | Submit one single-goal route and poll until settled arrival |
+| `get_navigation_status()` | Read service, pose, and owned navigation status |
+| `stop_navigation()` | Request and verify stopping of a task owned by this toolkit |
+
+Goals can be waypoint names/ids or `{x, y, yaw?}` objects supported by the newer
+planning service. Coordinate goals require that service capability; the older
+name-only planner returns an error. An omitted coordinate yaw leaves the final
+heading unconstrained. Scene-graph querying and simulator administration are
+not exposed. Multi-goal plans can be inspected or previewed, but following
+requires a single goal: plan and verify each destination before the next so the
+service cannot skip a failed destination and visit a later one first.
+
+The toolkit passes the saved route to `/walk`; it does not reconstruct paths or
+convert map points to body-frame `dis_move` commands. Acceptance is not arrival:
+it waits for `state=finished`, successful per-leg results, no fall, and final
+pose/error checks (0.15 m and, when requested, 0.2 radians). Failed previews,
+changed maps, stale starts beyond 0.3 m, and already-completed plans are rejected.
+
+On cancellation or timeout after acceptance, the toolkit requests stopping and
+checks finished state. A lost acceptance response leaves submission uncertain;
+it does not resend or blindly stop an unidentified task. Verify the simulation
+service before retrying. An unconfirmed stop is retained as an error. The normal
+`stop_navigation` tool cannot interrupt a currently exclusive tool call; planner
+cancellation reaches the dedicated cancellation hook before waiting for it.
+
+Artifacts are stored under `navigation/plans/`, `navigation/previews/`, and
+`navigation/walks/`. `states.json` records the last pose, active task, errors,
+and `completed_navigation_goals`; the transcript records tool calls. Navigation
+success is reported by the tool's `navigation_completed` field. Overall
+`environment_success` remains unset; simulation arrival is not physical motion
+verification. No finalizer or exploration capability is enabled for this mode.
+
+## Gateway mode
 
 This backend connects to a local HTTP RPC gateway, lists online robots, and waits
 for synchronous `dis_move` completion. The communication programs own body-initiated

@@ -60,6 +60,22 @@ def get_toolkit(
     config: RunConfig,
 ):
     """Bind the runtime client to the planner's movement tools."""
+    if config.prompt_vars.get("unitree_mode", "gateway") == "mujoco":
+        from robots.unitree.mujoco_toolkit import UnitreeMujocoToolkit
+
+        try:
+            return UnitreeMujocoToolkit(
+                **runtime_kwargs,
+                dashboard_events=dashboard_events,
+                memory=MemoryManager(config.prompt_vars["memory_dir"]),
+                state_output_dir=config.output_dir,
+                navigation_timeout_s=config.prompt_vars["navigation_timeout_s"],
+            )
+        except Exception:
+            for client in runtime_kwargs.values():
+                client.close()
+            raise
+
     from robots.unitree.toolkit import UnitreeToolkit
 
     return UnitreeToolkit(
@@ -77,6 +93,28 @@ def _add_cli_args(parser: argparse.ArgumentParser, use_dashboard: bool) -> None:
     parser.set_defaults(memory_profile="local")
     parser.add_argument(
         "--task", required=not use_dashboard, help="Natural-language robot task."
+    )
+    parser.add_argument(
+        "--unitree-mode",
+        choices=("gateway", "mujoco"),
+        default="gateway",
+        help="Use the dis_move gateway (default) or external MuJoCo navigation services.",
+    )
+    parser.add_argument(
+        "--nav-endpoint",
+        default="http://192.168.104.191:8765",
+        help="A* planning service base URL, for --unitree-mode mujoco.",
+    )
+    parser.add_argument(
+        "--sim-endpoint",
+        default="http://192.168.104.191:8770",
+        help="Simulation control base URL, for --unitree-mode mujoco.",
+    )
+    parser.add_argument(
+        "--navigation-timeout-s",
+        type=float,
+        default=300.0,
+        help="Per-walk or preview budget in MuJoCo mode (default: 300 seconds).",
     )
     parser.add_argument(
         "--env-endpoint",
@@ -110,6 +148,21 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("--env-timeout-s must be finite and greater than zero")
     if args.robot_index is not None:
         validate_robot_index(args.robot_index)
+    unitree_mode = getattr(args, "unitree_mode", "gateway")
+    if unitree_mode == "mujoco":
+        from robots.unitree.http_client import validate_endpoint
+
+        if args.robot_index is not None or args.env_timeout_s is not None:
+            raise ValueError(
+                "--robot-index and --env-timeout-s apply to gateway mode only"
+            )
+        validate_endpoint(args.nav_endpoint)
+        validate_endpoint(args.sim_endpoint)
+        if (
+            not math.isfinite(args.navigation_timeout_s)
+            or args.navigation_timeout_s <= 0
+        ):
+            raise ValueError("--navigation-timeout-s must be finite and positive")
     # 未指定输出目录时，使用带时间戳的默认目录。
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_dir = Path(
@@ -120,6 +173,13 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
         if args.memory_dir
         else get_memory_dir("unitree")
     )
+    mode_vars = {"unitree_mode": unitree_mode}
+    if unitree_mode == "mujoco":
+        mode_vars.update(
+            nav_endpoint=args.nav_endpoint,
+            sim_endpoint=args.sim_endpoint,
+            navigation_timeout_s=args.navigation_timeout_s,
+        )
     # prompt_vars 用于提示词和工具配置，task_desc 写入运行记录。
     return RunConfig(
         recipe_tag=f"unitree_{uuid4().hex[:12]}",
@@ -129,12 +189,16 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
             "env_endpoint": args.env_endpoint,
             "robot_index": args.robot_index,
             "memory_dir": str(memory_dir),
+            **mode_vars,
         },
         task_desc={
             "task": task,
             "env_endpoint": args.env_endpoint,
             "robot_index": args.robot_index,
-            "validation_scope": VALIDATION_SCOPE,
+            "validation_scope": "mujoco_navigation"
+            if unitree_mode == "mujoco"
+            else VALIDATION_SCOPE,
+            **mode_vars,
         },
     )
 
@@ -147,6 +211,8 @@ def _init_runtime(
     components: set[str] | None,
 ) -> tuple[list[ProcessDaemon], dict[str, Any]]:
     del output_dir  # 本函数不使用该参数，不会删除磁盘目录。
+    if getattr(args, "unitree_mode", "gateway") == "mujoco":
+        return _init_mujoco_runtime(args, components)
     from robots.unitree.env_client import UnitreeEnvClient
 
     # None 表示初始化默认的 env 组件。
@@ -188,3 +254,30 @@ def _init_runtime(
         raise
     # 服务由外部启动，无需返回本地服务进程；env 随后传给 Toolkit。
     return [], {"env": env}
+
+
+def _init_mujoco_runtime(
+    args: argparse.Namespace, components: set[str] | None
+) -> tuple[list[ProcessDaemon], dict[str, Any]]:
+    """Borrow the external REST services, cleaning partial startup on failure."""
+    from robots.unitree.http_client import map_identity
+    from robots.unitree.navigation_client import NavigationClient
+    from robots.unitree.simulation_client import SimulationClient
+
+    selected = {"nav", "sim"} if components is None else components
+    if selected.difference({"nav", "sim"}):
+        raise ValueError(f"unknown MuJoCo runtime components: {sorted(selected)}")
+    clients: dict[str, Any] = {}
+    try:
+        if "nav" in selected:
+            clients["nav"] = NavigationClient(args.nav_endpoint)
+        if "sim" in selected:
+            clients["sim"] = SimulationClient(args.sim_endpoint, timeout_s=5.0)
+        identities = [map_identity(client.health()) for client in clients.values()]
+        if len(set(identities)) > 1:
+            raise ValueError("planning and simulation map_id/map_version do not match")
+    except Exception:
+        for client in clients.values():
+            client.close()
+        raise
+    return [], clients
