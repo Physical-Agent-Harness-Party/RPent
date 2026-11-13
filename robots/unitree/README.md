@@ -1,179 +1,61 @@
-# Unitree gateway and MuJoCo navigation
+# Unitree 接入说明
 
-[简体中文](README.zh-CN.md)
+RPent 提供两种 Unitree 模式，默认使用 `gateway`。
 
-`--unitree-mode gateway` is the default and uses the multi-robot `dis_move`
-protocol described below. `--unitree-mode mujoco` selects the external A* and
-simulation HTTP services; it does not connect to the gateway.
+| 模式 | 连接对象 | 执行方式 |
+| --- | --- | --- |
+| `mujoco` | 外部 A* 和 MuJoCo HTTP 服务 | 地图目标 → 单目标路线 → 行走及到达验收 |
+| `gateway` | 通信中转 RPC 服务 | `dis_move` 身体坐标相对移动，由本体执行 |
 
-## MuJoCo navigation
+安装 RPent 基础依赖并配置模型即可；MuJoCo 模式的客户端无需安装 MuJoCo 或 Torch。Unitree CLI 要求 TTY，不接入内置 Dashboard，也不支持交互模式和探索模式。HTTP 启动服务自动为子进程分配 TTY。记忆默认保存在本地。
 
-For setup, a complete two-waypoint patrol command, `--max-turns` termination,
-and result inspection, see the [MuJoCo patrol guide (Chinese)](MUJOCO_USAGE.zh-CN.md).
-The external A* service's name-based API and deployment examples are documented
-in the [navigation service reference (Chinese)](NAVIGATION.zh-CN.md).
+## 使用文档
 
-Install RPent's base dependencies and configure a planner API. Navigation and
-simulation run on the service machine; the RPent client does not need local
-MuJoCo or Torch. Unitree requires a normal terminal with a TTY and does not
-support Dashboard, interactive, or exploration modes.
-
-The A* service and simulation control service must already be running with the
-same `map_id` and `map_version`. Start the simulator on the service machine
-before requesting movement. The toolkit does not restart it or stop other
-controllers. Give each simulation endpoint to only one RPent runner: status
-replies are not documented to always carry a task id, so sharing an endpoint
-between runners is unsupported.
-
-```bash
-rpent --robot unitree --unitree-mode mujoco \
-  --nav-endpoint http://192.168.104.191:8765 \
-  --sim-endpoint http://192.168.104.191:8770 \
-  --planner api --model openai:deepseek-flash \
-  --task 'Go to the billboard, verify arrival, then go to the restroom passage.' \
-  --navigation-timeout-s 300 --planner-timeout-s 900 --max-turns 16 \
-  --output-dir ./logs/unitree-navigation
-```
-
-Replace both addresses with the reachable service endpoints. Gateway flags
-`--robot-index` and `--env-timeout-s` are rejected in MuJoCo mode. The
-`--navigation-timeout-s` budget applies to each walk or independent preview;
-`--planner-timeout-s` must cover the complete task and model calls. HTTP requests
-bypass environment proxies and do not automatically retry movements.
-
-`UnitreeMujocoToolkit` exposes:
-
-| Tool | Behavior |
+| 文档 | 内容 |
 | --- | --- |
-| `list_navigation_goals()` | Read live waypoint names, indices, and standing poses |
-| `get_navigation_pose()` | Read the current map-frame pose (meters and radians) |
-| `plan_navigation(goals, step=None)` | Plan from a fresh pose; return a saved `plan_id` and summary |
-| `preview_navigation(plan_id)` | Preview independently and retain its report |
-| `follow_navigation(plan_id)` | Submit one single-goal route and poll until settled arrival |
-| `get_navigation_status()` | Read service, pose, and owned navigation status |
-| `stop_navigation()` | Request and verify stopping of a task owned by this toolkit |
+| [MuJoCo 使用指南](MUJOCO_USAGE.zh-CN.md) | 环境准备、持续往返、预算、到达验收和结果检查 |
+| [前端与 HTTP 服务](FRONTEND_USAGE.zh-CN.md) | 配置、启动服务、提交任务、查询、停止和结果回调 |
+| [中转 RPC 接口](INTERFACE.zh-CN.md) | 真机网关的请求、回执、误差和超时约定 |
+| [真机测试](REAL_ROBOT_TEST.zh-CN.md) | 只读检查、单次动作和模型调用测试 |
+| [外部导航服务参考](NAVIGATION.zh-CN.md) | A* 服务部署、坐标系及 HTTP／WebSocket 协议 |
 
-Goals can be waypoint names/ids or `{x, y, yaw?}` objects supported by the newer
-planning service. Coordinate goals require that service capability; the older
-name-only planner returns an error. An omitted coordinate yaw leaves the final
-heading unconstrained. Scene-graph querying and simulator administration are
-not exposed. Multi-goal plans can be inspected or previewed, but following
-requires a single goal: plan and verify each destination before the next so the
-service cannot skip a failed destination and visit a later one first.
+## MuJoCo 工具
 
-The toolkit passes the saved route to `/walk`; it does not reconstruct paths or
-convert map points to body-frame `dis_move` commands. Acceptance is not arrival:
-it waits for `state=finished`, successful per-leg results, no fall, and final
-pose/error checks (0.25 m and, when requested, 0.2 radians). Failed previews,
-changed maps, stale starts beyond 0.3 m, and already-completed plans are rejected.
+一个仿真端点只交给一个任务使用。RPent 按“实时位姿规划 → 执行一个目标 → 确认到达 → 下一个目标”串行运行，完整路线原样交给 `/walk`，不转换成 `dis_move`。
 
-On cancellation or timeout after acceptance, the toolkit requests stopping and
-checks finished state. A lost acceptance response leaves submission uncertain;
-it does not resend or blindly stop an unidentified task. Verify the simulation
-service before retrying. An unconfirmed stop is retained as an error. The normal
-`stop_navigation` tool cannot interrupt a currently exclusive tool call; planner
-cancellation reaches the dedicated cancellation hook before waiting for it.
-
-Artifacts are stored under `navigation/plans/`, `navigation/previews/`, and
-`navigation/walks/`. `states.json` records the last pose, active task, errors,
-and `completed_navigation_goals`; the transcript records tool calls. Navigation
-success is reported by the tool's `navigation_completed` field. Overall
-`environment_success` remains unset; simulation arrival is not physical motion
-verification. No finalizer or exploration capability is enabled for this mode.
-
-## Gateway mode
-
-This backend connects to a local HTTP RPC gateway, lists online robots, and waits
-for synchronous `dis_move` completion. The communication programs own body-initiated
-WebSocket connections, registration, heartbeats, and per-robot busy admission.
-RPent reuses its RPC clients, tool scheduler, and state artifacts without calling
-a body SDK directly.
-
-## Tools and motion semantics
-
-| Tool | Purpose |
+| 工具 | 用途 |
 | --- | --- |
-| `list_robots()` | List online robots |
-| `get_robot_status(robot_index=None)` | Query recent robot connectivity |
-| `execute_command(dx_m, dy_m, arrival_turn_deg, robot_index=None)` | Wait for a relative move, stopping, and final acceptance |
+| `list_navigation_goals()` | 查询实时点位名称、编号和站位 |
+| `get_navigation_pose()` | 查询地图位姿，单位米、弧度 |
+| `plan_navigation(goals, step=None, sub_task_id=None)` | 从实时位姿规划并保存 `plan_id` |
+| `preview_navigation(plan_id)` | 预演路线并保存报告 |
+| `follow_navigation(plan_id)` | 执行单目标路线，内部轮询并验收到达 |
+| `get_navigation_status()` | 查询服务、位姿及本次任务状态 |
+| `stop_navigation()` | 请求停止并核对本 Toolkit 的行走任务 |
+| `register_navigation_subtasks(commands, repeat_from=None)` | 启用前端回调时登记有序子任务及循环起点 |
+| `finish(status, summary)` | 结束有限任务；成功前检查已登记目标和导航状态 |
 
-An omitted index uses `--robot-index`. Without a default, specify the target in
-each call. An explicit index may select another robot; the default is not an
-access restriction.
+目标支持名称、编号，以及规划服务支持的 `{x, y, yaw?}` 坐标。多目标计划可以查看或预演，执行只接受单目标计划。每次访问都要重新规划，已完成的 `plan_id` 不能复用。
 
-`dx_m` and `dy_m` are target offsets in meters in the body frame at the start of
-this move: +x forward, +y left. The body turns toward that fixed target and walks
-forward, stops, then turns `arrival_turn_deg` relative to its actual arrival
-heading (+left). A rear target requires turning around and walking forward,
-not direct backward walking; its full hardware execution has not passed testing.
-Zero displacement turns in place. Preserve 450-degree turns without normalization.
-All three values must be finite numbers and combined displacement must be at most
-5 m. Speed, duration, waypoint lists, and remote stop commands are not exposed.
-The 5 m limit is an input bound, not evidence of full-distance hardware testing.
+## 网关模式
 
-The tool constructs `{"type":"dis_move","payload":{...}}` internally. Tasks can
-specify relative movement directly, such as going 0.4 m forward and 0.3 m left,
-then turning left 30 degrees. Supply enough distance and target information.
+通信中转管理机器人注册、WebSocket、心跳和机器人级忙碌状态；RPent 通过本地 RPC 调用，不直接访问本体 SDK。
 
-## Requirements and read-only queries
+| 工具 | 用途 |
+| --- | --- |
+| `list_robots()` | 查询在线机器人 |
+| `get_robot_status(robot_index=None)` | 查询指定机器人的通信状态 |
+| `execute_command(dx_m, dy_m, arrival_turn_deg, robot_index=None)` | 等待相对移动、停止及验收 |
 
-Install base dependencies in the active environment and configure your planner API:
+省略工具参数 `robot_index` 时使用 `--robot-index` 的默认目标；未配置默认值时必须显式指定。显式参数可选择其他机器人，默认目标不构成访问限制。配置默认目标时启动会检查其在线；未配置时，空列表仍允许只读查询。`online` 不代表本体允许运动。
 
-```bash
-pip install -e .
-```
+`dx_m`、`dy_m` 是执行起点的身体坐标偏移，正 x 向前、正 y 向左，合成位移不超过 5 米。本体先朝向目标再前进，停稳后追加 `arrival_turn_deg` 转角，正值左转；负 x 不表示直接倒退。零位移可原地转向，450° 保留完整圈数。参数必须是有限数字，不接受速度、持续时间或坐标序列。
 
-Use a normal terminal: Unitree retains the physical-robot terminal requirement.
-It defaults to local memory without an HF corpus download. The communication team
-provides the local port; the default is `http://127.0.0.1:8115`. See the
-[RPC interface specification (Chinese)](INTERFACE.zh-CN.md).
-For physical deployment, follow the [real-robot test guide (Chinese)](REAL_ROBOT_TEST.zh-CN.md)
-for read-only checks, one motion, LLM tool calls, and multi-robot routing.
+默认 RPC 等待时间按每条动作估算；`--env-timeout-s` 可覆盖该值和启动等待预算，`--planner-timeout-s` 是整个会话预算。公式、查询预算和验收字段见 [RPC 接口](INTERFACE.zh-CN.md)。客户端核对序号、命令回显、完成与停止回执，以及报告和实际结果推算的误差：位置 0.07 米、追加转角 3°。超时可能发生在动作部分执行之后，不自动重发；关闭连接不保证本体停止。
 
-```bash
-rpent --robot unitree --planner api --model openai:deepseek-flash \
-  --env-endpoint http://127.0.0.1:8115 \
-  --task 'List online robots and query robot 1 status. Do not send actions.' \
-  --output-dir ./logs/unitree-status
-```
+### 本地模拟
 
-Startup probes `env.list_robots` without an unbound `healthz` call. With
-`--robot-index N`, the target must also be online; unknown or offline targets fail
-startup. Without a default target, an empty list still allows read-only tasks.
-
-## Wait budgets and completion
-
-By default each command gets a calculated RPC wait:
-
-```text
-L = hypot(dx_m, dy_m)
-bearing = atan2(dy_m, dx_m), or 0 for zero displacement
-wait_seconds = 60 + L / 0.07 + (abs(bearing) + abs(arrival_turn_deg * pi / 180)) / 0.10
-```
-
-This includes the body control budget plus 30 seconds for communication and
-stopping. For `(0.4, 0.3, 30)` the wait is about 78.8 seconds. An explicit
-`--env-timeout-s N` overrides the command wait and service readiness budget exactly;
-an insufficient override can still time out. Automatic readiness uses 10 seconds.
-Individual startup probes and status queries use 1 second; list queries use 10.
-Post-readiness list validation and default-target checks are outside that budget.
-Gateway and WebSocket waits must also cover execution. `--planner-timeout-s`
-covers the whole session, including all moves and LLM calls.
-
-The client requires boolean `received`, `completed`, and `stop_acknowledged` to be
-true, matching target and command, and six finite motion-result numbers. Both
-reported errors and errors derived from actual displacement/turn must meet the
-default 0.07 m position and 3 degree arrival-turn tolerances. The body verifies
-near-rest state; RPent has no independent sensor verification. A timeout or failure
-may follow partial motion. The client does not automatically resend, and
-connection closure does not stop the robot.
-
-## Local mock test
-
-The included server simulates online robots and ideal completion measurements.
-It has no physical connection, SDK calls, WebSocket implementation, or heartbeats.
-
-Start it in one terminal:
+模拟服务生成理想回执，不连接本体 SDK、不实现机器人 WebSocket 或心跳。在两个终端分别执行：
 
 ```bash
 python -m robots.unitree.env_server \
@@ -181,41 +63,33 @@ python -m robots.unitree.env_server \
   --commands-file ./logs/unitree-receiver/commands.jsonl
 ```
 
-In another terminal:
-
 ```bash
 rpent --robot unitree --planner api --model openai:deepseek-flash \
   --env-endpoint http://127.0.0.1:8115 \
   --planner-timeout-s 300 \
-  --task 'Local mock: robot 1 goes to 0.4 m forward and 0.3 m left, stops and turns left 30 degrees; after completion robot 2 turns left 450 degrees in place.' \
+  --task '本地模拟：机器人1到起点前方0.4米、左侧0.3米的位置，停稳后左转30度；完成后机器人2原地左转450度。' \
   --output-dir ./logs/unitree-multi
 ```
 
-For one target, add `--robot-index 1` and refer to the default robot in the task.
-The mock also supports `--transport socket` and a `socket://127.0.0.1:8115` client
-endpoint. Production communication uses the documented HTTP transport.
+模拟端也支持 `--transport socket`，客户端对应 `socket://127.0.0.1:8115`；生产对接使用 HTTP。同一机器人忙碌时拒绝新任务，不排队；不同机器人可由不同客户端并发调用，单个 Toolkit 内的动作仍串行。
 
-Mock receipts include `mode: "mock"`, `completed: true`, and `motion_result`.
-These are synthetic values, not evidence of hardware motion. Busy robots reject
-new commands without replacing or queuing them; different clients may move
-different simulated robots concurrently. A single Toolkit still serializes all
-motion tools, including moves for different robots.
+输出的 `states.json` 包含 `acknowledged_commands`、`completed_commands`、`completed_by_robot`；transcript 保存调用过程，`validation_scope=reported_motion_completion`。模拟回执中的 `mode: "mock"` 和单步完成均不证明真机或整个任务成功。真机测试与已知限制见 [真机测试](REAL_ROBOT_TEST.zh-CN.md)。
 
-Outputs include `states.json` and `transcript_unitree_<run-id>.json`. State retains
-`acknowledged_commands` and adds `completed_commands` and `completed_by_robot`;
-full motion results appear in action records. The `validation_scope` is
-`reported_motion_completion`. One completed action does not automatically mark
-the whole task or physical scene as solved.
+## 文件组织与测试
 
-## Local checks
+| 文件 | 职责 |
+| --- | --- |
+| [robot_spec.py](robot_spec.py)、[prompt_bundle.py](prompt_bundle.py) | 模式注册、参数、客户端及模型提示词 |
+| [mujoco_toolkit.py](mujoco_toolkit.py) | 规划、预演、执行、验收、取消和状态记录 |
+| [navigation_client.py](navigation_client.py)、[simulation_client.py](simulation_client.py)、[http_client.py](http_client.py) | A*／仿真 HTTP 协议与响应校验 |
+| [frontend_client.py](frontend_client.py)、[check_frontend.py](check_frontend.py) | 前端回调、编号映射及独立接口检查 |
+| [task_server.py](task_server.py) | HTTP 接收、子进程、TTY、幂等记录和停止 |
+| [prepare_mujoco.sh](prepare_mujoco.sh)、[run_rpent.sh](../../run_rpent.sh) | 准备检查与两参数启动脚本 |
+| [env_client.py](env_client.py)、[toolkit.py](toolkit.py)、[protocol.py](protocol.py)、[env_server.py](env_server.py) | 网关客户端、工具、校验和模拟服务 |
+
+在仓库根目录运行离线测试，无需模型 API、机器人或 GPU：
 
 ```bash
-pip install -e ".[test]"
+pip install -e '.[test]'
 python -m pytest tests/unit_tests/robots/unitree -v
 ```
-
-Tests cover input bounds, completion and stop receipts, error acceptance, calculated
-waits, startup cleanup, state recording, and the public CLI with a scripted API
-planner. Real localhost HTTP/socket tests also cover per-robot busy rejection,
-independent robots, and remote completion after client timeout. No external model,
-hardware, or GPU is required.

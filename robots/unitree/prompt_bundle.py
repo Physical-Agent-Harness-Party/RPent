@@ -50,7 +50,33 @@ The simulator must already be running; do not restart it or stop other controlle
 All map identities must agree. This is simulation navigation, not physical-robot
 motion verification. For query-only tasks, finish after returning the information.
 After every requested destination is reached, finish with status=success and
-summarize destinations and errors. These tools use HTTP clients, not shell commands."""
+summarize destinations and errors. These tools use HTTP clients, not shell commands.""" + (
+            """
+
+FRONTEND TASK REPORTING:
+After reading the waypoint table and resolving the user's destinations, decompose
+the initial visit sequence into an ordered list. Call register_navigation_subtasks
+ONCE before plan_navigation. Each command combines navigation to ONE destination
+and verification of arrival; do not make arrival verification a separate subtask.
+For an explicitly requested continuous patrol, set repeat_from to the 1-based
+index where its repeating suffix begins: use 1 for alternating the two listed
+destinations. Omit repeat_from for finite tasks. Register only once and reuse
+the returned sub_task_id values across patrol visits. Do not invent a repeat count.
+For each subtask in order, call plan_navigation(goals=[one goal], sub_task_id=...)
+then follow_navigation(plan_id). The toolkit reports A* results, walk acceptance,
+and verified walk completion to the frontend. Never send HTTP callbacks yourself.
+After each arrival use next_sub_task_id, reading a fresh pose and making a NEW
+plan before the next visit. For continuous patrol keep navigating until the
+program's max-turns/timeout/cancellation stops the session; do not finish success
+just because both destinations have been visited once.
+Do not skip registered subtasks or register them again. If registration, reporting,
+or movement fails, finish failure and explain the remaining work. A callback
+failure after arrival does not authorize another walk. Only finish success after
+all registered subtasks of a finite task have verified arrival and successful callbacks.
+"""
+            if (variables or {}).get("frontend_endpoint")
+            else ""
+        )
     return """You control relative Unitree moves through a multi-robot gateway.
 Use list_robots to discover online robot indices and get_robot_status to query
 one robot. Online means recent connectivity, not permission or ability to move.

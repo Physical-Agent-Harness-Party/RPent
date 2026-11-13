@@ -4,6 +4,7 @@ __pycache__/
 
 # Local run outputs.
 logs/
+/runs/
 
 /checkpoints/
 
@@ -27,3 +28,6 @@ build/
 
 # Standalone calibration environment.
 .venv-calibration/
+
+# Private local credentials and service configuration.
+/.env.local

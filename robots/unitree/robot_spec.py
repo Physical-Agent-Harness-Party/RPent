@@ -61,17 +61,30 @@ def get_toolkit(
     if config.prompt_vars.get("unitree_mode", "gateway") == "mujoco":
         from robots.unitree.mujoco_toolkit import UnitreeMujocoToolkit
 
+        frontend = None
         try:
+            if config.prompt_vars.get("frontend_endpoint"):
+                from robots.unitree.frontend_client import FrontendTaskClient
+
+                frontend = FrontendTaskClient(
+                    config.prompt_vars["frontend_endpoint"],
+                    config.prompt_vars["frontend_task_id"],
+                    output_dir=config.output_dir,
+                    subtasks_format=config.prompt_vars["frontend_subtasks_format"],
+                )
             return UnitreeMujocoToolkit(
                 **runtime_kwargs,
                 dashboard_events=dashboard_events,
                 memory=MemoryManager(config.prompt_vars["memory_dir"]),
                 state_output_dir=config.output_dir,
                 navigation_timeout_s=config.prompt_vars["navigation_timeout_s"],
+                frontend=frontend,
             )
         except Exception:
             for client in runtime_kwargs.values():
                 client.close()
+            if frontend is not None:
+                frontend.close()
             raise
 
     from robots.unitree.toolkit import UnitreeToolkit
@@ -112,6 +125,22 @@ def _add_cli_args(parser: argparse.ArgumentParser, use_dashboard: bool) -> None:
         help="Per-walk or preview budget in MuJoCo mode (default: 300 seconds).",
     )
     parser.add_argument(
+        "--frontend-endpoint",
+        default=None,
+        help="Existing frontend API base URL; enables /api/rpend callbacks in MuJoCo mode.",
+    )
+    parser.add_argument(
+        "--frontend-task-id",
+        default=None,
+        help="Frontend task ID, required together with --frontend-endpoint.",
+    )
+    parser.add_argument(
+        "--frontend-subtasks-format",
+        choices=("object", "array"),
+        default="array",
+        help="Register subtasks as a bare array (default) or {sub_tasks: [...]}.",
+    )
+    parser.add_argument(
         "--env-endpoint",
         default="http://127.0.0.1:8115",
         help="Existing Unitree gateway RPC server (HTTP or socket).",
@@ -143,6 +172,24 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
     if args.robot_index is not None:
         validate_robot_index(args.robot_index)
     unitree_mode = getattr(args, "unitree_mode", "gateway")
+    frontend_endpoint = getattr(args, "frontend_endpoint", None)
+    frontend_task_id = getattr(args, "frontend_task_id", None)
+    if (frontend_endpoint is None) != (frontend_task_id is None):
+        raise ValueError(
+            "--frontend-endpoint and --frontend-task-id must be provided together"
+        )
+    if frontend_endpoint is not None:
+        from robots.unitree.frontend_client import validate_task_id
+        from robots.unitree.http_client import validate_endpoint
+
+        if unitree_mode != "mujoco":
+            raise ValueError("frontend callbacks require --unitree-mode mujoco")
+        if getattr(args, "explore", False):
+            raise ValueError(
+                "frontend callbacks support one evaluation run; remove --explore"
+            )
+        validate_endpoint(frontend_endpoint)
+        validate_task_id(frontend_task_id)
     if unitree_mode == "mujoco":
         from robots.unitree.http_client import validate_endpoint
 
@@ -173,6 +220,12 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
             sim_endpoint=args.sim_endpoint,
             navigation_timeout_s=args.navigation_timeout_s,
         )
+        if frontend_endpoint is not None:
+            mode_vars.update(
+                frontend_endpoint=frontend_endpoint,
+                frontend_task_id=frontend_task_id,
+                frontend_subtasks_format=args.frontend_subtasks_format,
+            )
     return RunConfig(
         recipe_tag=f"unitree_{uuid4().hex[:12]}",
         output_dir=output_dir,

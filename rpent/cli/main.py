@@ -707,6 +707,12 @@ def main() -> int:
             operator_input.close()
         if recipe_path:
             logger.info("recipe: %s", recipe_path)
+        elif not getattr(robot_spec, "supports_exploration", False):
+            logger.info(
+                "recipe: not written (recipe generation is not enabled for this robot)"
+            )
+        elif solved:
+            logger.info("recipe: not written (no replay recipe was produced)")
         else:
             logger.info("recipe: not written (cell unsolved)")
         for d in daemons:
