@@ -10,7 +10,6 @@ set -euo pipefail
 if [[ $# -eq 1 && "$1" == '--help' ]]; then
     cat <<'HELP'
 用法：bash run_rpent.sh TASK_ID '自然语言任务'
-兼容入口：run_rpend.sh。
 
 先准备 .venv，并在网页后端创建父任务。脚本自动加载仓库的 .env.local。
 前端 API 默认 http://121.36.57.9:80，可用 RPENT_FRONTEND_ENDPOINT 覆盖。

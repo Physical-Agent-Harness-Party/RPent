@@ -170,4 +170,4 @@ Content-Type: application/json
 
 只检查网页后端接口、不请求模型或运动时运行 `.venv/bin/python -m robots.unitree.check_frontend`，会创建标有测试用途的父任务、三个子任务和一条数据。成功输出 `ok:true`，报告保存在 `logs/frontend-check-*/frontend_check.json`；可用 `--timeout-s 30` 调整超时。
 
-终端可用 `bash run_rpent.sh "$TASK_ID" "$TASK_TEXT"` 代替 HTTP 启动，仍须使用已创建的父任务编号。`run_rpend.sh` 是兼容入口，两者均自动加载配置并创建独立运行目录。已经通过 HTTP 提交的任务不要再手动启动相同任务。
+终端可用 `bash run_rpent.sh "$TASK_ID" "$TASK_TEXT"` 代替 HTTP 启动，仍须使用已创建的父任务编号。脚本自动加载配置并创建独立运行目录。已经通过 HTTP 提交的任务不要再手动启动相同任务。

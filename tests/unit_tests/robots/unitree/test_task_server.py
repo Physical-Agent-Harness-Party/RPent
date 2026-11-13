@@ -167,10 +167,9 @@ class TaskServerTest(unittest.TestCase):
                     self.assertIn("7", runner.get(task_id)["error"])
                 runner.close()
 
-    def test_http_runner_uses_the_existing_launch_scripts(self):
+    def test_http_runner_uses_the_existing_launch_script(self):
         repo = Path(__file__).resolve().parents[4]
-        for name in ("run_rpent.sh", "run_rpend.sh"):
-            shutil.copyfile(repo / name, self.root / name)
+        shutil.copyfile(repo / "run_rpent.sh", self.root / "run_rpent.sh")
         python = self.root / ".venv" / "bin" / "python"
         python.parent.mkdir(parents=True)
         python.write_text(

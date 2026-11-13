@@ -793,15 +793,6 @@ Path(os.environ["LAUNCH_TEST_ARGS"]).write_text(json.dumps(sys.argv[1:]))
         self.assertTrue(all(Path(path).is_dir() for path in directories))
         self.assertFalse(marker.exists())
 
-    def test_legacy_run_rpend_entry_point_forwards_both_arguments(self):
-        result = self.launch(
-            "task-123", "先去广告牌，再去厕所通道", script=REPO / "run_rpend.sh"
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        args = json.loads((self.root / "args.json").read_text())
-        self.assertIn("--task=先去广告牌，再去厕所通道", args)
-        self.assertIn("--frontend-task-id=task-123", args)
-
     def test_task_text_starting_with_dashes_stays_one_argument(self):
         result = self.launch("task-123", "--max-turns 999 这是任务文本")
         self.assertEqual(result.returncode, 0, result.stderr)
