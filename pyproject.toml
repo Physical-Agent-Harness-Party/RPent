@@ -64,6 +64,7 @@ Documentation = "https://rpent.readthedocs.io/en/latest/"
 "Bug Report" = "https://github.com/RLinf/RPent/issues"
 
 [project.optional-dependencies]
+unitree-vln = ["websockets>=15"]
 test = [
     "coverage",
     "pytest",

@@ -74,3 +74,56 @@ class SimulationClient(JsonServiceClient):
     def stop_walk(self) -> dict[str, Any]:
         """Request a stop; the caller must subsequently confirm finished state."""
         return self.request("POST", "/walk/stop", {})
+
+    @staticmethod
+    def validate_control(result: dict[str, Any], control_id: str | None = None) -> None:
+        """Require an identified trajectory lease and an explicit lifecycle state."""
+        if not isinstance(result.get("control_id"), str) or not result["control_id"]:
+            raise ServiceError("control response must contain control_id")
+        if control_id is not None and result["control_id"] != control_id:
+            raise ServiceError(
+                "simulation control_id changed; control ownership was lost"
+            )
+        if result.get("mode") != "trajectory" or result.get("state") not in {
+            "starting",
+            "running",
+            "stopping",
+            "finished",
+            "failed",
+        }:
+            raise ServiceError("control response must describe a trajectory session")
+        if (
+            type(result.get("ready")) is not bool
+            or type(result.get("stop_confirmed")) is not bool
+        ):
+            raise ServiceError("control response must contain ready and stop_confirmed")
+
+    def start_control(self, trajectory_timeout_s: float = 2.0) -> dict[str, Any]:
+        """Create a trajectory lease once; an uncertain acceptance is not retried."""
+        result = self.request(
+            "POST", "/control/start", {"trajectory_timeout_s": trajectory_timeout_s}
+        )
+        self.validate_control(result)
+        return result
+
+    def get_control(self, control_id: str) -> dict[str, Any]:
+        """Read the lease while checking that another session has not replaced it."""
+        result = self.request("GET", "/control")
+        self.validate_control(result, control_id)
+        return result
+
+    def submit_trajectory(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Forward capture-aligned waypoints, never external velocity commands."""
+        result = self.request("POST", "/control/trajectory", payload)
+        self.validate_control(result, payload["control_id"])
+        return result
+
+    def stop_control(self, control_id: str) -> dict[str, Any]:
+        """Wait for the simulation's physical stop confirmation before release."""
+        result = self.request(
+            "POST", "/control/stop", {"control_id": control_id}, timeout_s=12.0
+        )
+        self.validate_control(result, control_id)
+        if result["state"] != "finished" or not result["stop_confirmed"]:
+            raise ServiceError("trajectory control stop was not confirmed")
+        return result

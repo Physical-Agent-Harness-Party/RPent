@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Start the existing MuJoCo launcher from an HTTP request on the RPent host."""
+"""Serve persistent MuJoCo task execution over HTTP and optional MCP."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 class RunRequest(BaseModel):
-    """Accept only an existing parent ID and the complete natural-language task."""
+    """Accept a stable task ID and complete instruction for the configured reporter."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     task_id: str = Field(min_length=1, max_length=256)
@@ -109,7 +109,11 @@ class TaskRunner:
         jobs_dir: Path,
         *,
         stop_timeout_s: float = 30.0,
+        task_reporting: str = "frontend",
     ) -> None:
+        if task_reporting not in {"frontend", "local"}:
+            raise ValueError("task_reporting must be frontend or local")
+        self.task_reporting = task_reporting
         self.repo_root = repo_root.resolve()
         self.jobs_dir = jobs_dir.resolve()
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -186,6 +190,21 @@ class TaskRunner:
                 }
             except (OSError, ValueError):
                 pass
+        # The VLN tool persists compact progress while its one long call runs.
+        vln_path = output / "navigation" / "vln" / "latest.json"
+        try:
+            if vln_path.stat().st_mtime_ns > state_time:
+                vln = _read_json(vln_path)
+                navigation = record["navigation"] or {}
+                record["navigation"] = navigation | {
+                    "vln": vln,
+                    "active_control_id": vln.get("active_control_id"),
+                    "submission_uncertain": vln.get("submission_uncertain", False),
+                    "stop_error": vln.get("stop_error"),
+                    "pose": vln.get("pose") or navigation.get("pose"),
+                }
+        except (OSError, ValueError):
+            pass
         transcripts = sorted(output.glob("transcript_unitree*.json"))
         if transcripts:
             try:
@@ -234,6 +253,7 @@ class TaskRunner:
             job = _Job(
                 record={
                     **request.model_dump(),
+                    "task_reporting": self.task_reporting,
                     "status": "starting",
                     "created_at": _now(),
                     "finished_at": None,
@@ -255,7 +275,11 @@ class TaskRunner:
             slave = None
             try:
                 job.terminal_fd, slave = pty.openpty()
-                environment = dict(os.environ, PYTHONUNBUFFERED="1")
+                environment = dict(
+                    os.environ,
+                    PYTHONUNBUFFERED="1",
+                    RPENT_TASK_REPORTING=self.task_reporting,
+                )
                 with log_file.open("ab", buffering=0) as output:
                     job.process = subprocess.Popen(
                         [
@@ -296,10 +320,12 @@ class TaskRunner:
                 self._refresh(job)
                 record = job.record
                 navigation = record["navigation"] or {}
+                vln = navigation.get("vln") or {}
                 finish = record["finish"] or {}
                 if (
                     record["forced_stop"]
                     or navigation.get("active_walk_id")
+                    or navigation.get("active_control_id")
                     or navigation.get("submission_uncertain")
                     or navigation.get("stop_error")
                     or (exit_code < 0 and not record["stop_requested"])
@@ -308,8 +334,18 @@ class TaskRunner:
                 elif record["stop_requested"]:
                     status = "stopped"
                 elif (
+                    exit_code == 0
+                    and not record["error"]
+                    and not navigation.get("error")
+                    and vln.get("state") == "verification_required"
+                    and not vln.get("error")
+                ):
+                    status = "verification_required"
+                elif (
                     exit_code != 0
                     or record["error"]
+                    or vln.get("error")
+                    or vln.get("state") == "failed"
                     or finish.get("status") in {"failure", "stuck"}
                 ):
                     status = "failed"
@@ -453,16 +489,29 @@ def create_app(
     repo_root: Path | None = None,
     jobs_dir: Path | None = None,
     token: str | None = None,
+    enable_mcp: bool = False,
+    robot_id: str = "go2-01",
+    task_reporting: str = "frontend",
+    mcp_allowed_hosts: list[str] | None = None,
 ) -> FastAPI:
     """Build the standalone API; allocate resources only during its lifespan."""
     root = repo_root or get_repo_root()
+    mcp_server = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        runner = TaskRunner(root, jobs_dir or root / "logs" / "http-runner")
+        runner = TaskRunner(
+            root,
+            jobs_dir or root / "logs" / "http-runner",
+            task_reporting=task_reporting,
+        )
         app.state.runner = runner
         try:
-            yield
+            if mcp_server is None:
+                yield
+            else:
+                async with mcp_server.session_manager.run():
+                    yield
         finally:
             await asyncio.to_thread(runner.close)
 
@@ -521,6 +570,34 @@ def create_app(
         find(task_id)
         return app.state.runner.stop(task_id)
 
+    if enable_mcp:
+        from robots.unitree.task_mcp import create_task_mcp
+
+        mcp_server = create_task_mcp(
+            lambda: app.state.runner, robot_id=robot_id, allowed_hosts=mcp_allowed_hosts
+        )
+        mcp_app = mcp_server.streamable_http_app()
+
+        async def authorized_mcp(
+            scope: dict[str, Any], receive: Any, send: Any
+        ) -> None:
+            if scope["type"] == "http":
+                from starlette.datastructures import Headers
+
+                try:
+                    await authorize(Headers(scope=scope).get("authorization"))
+                except HTTPException as exc:
+                    response = JSONResponse(
+                        {"detail": exc.detail},
+                        status_code=exc.status_code,
+                        headers=exc.headers,
+                    )
+                    await response(scope, receive, send)
+                    return
+            await mcp_app(scope, receive, send)
+
+        app.mount("/mcp", authorized_mcp)
+
     return app
 
 
@@ -529,6 +606,16 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8780, type=int)
+    parser.add_argument("--mcp", action="store_true", help="Serve task tools at /mcp/.")
+    parser.add_argument("--robot-id", default="go2-01")
+    parser.add_argument(
+        "--mcp-allowed-host",
+        action="append",
+        help="Additional trusted Host header, e.g. go2-01.lan:8780; repeatable.",
+    )
+    parser.add_argument(
+        "--task-reporting", choices=("frontend", "local"), default="frontend"
+    )
     parser.add_argument(
         "--jobs-dir", type=Path, help="default: <repo>/logs/http-runner"
     )
@@ -539,7 +626,16 @@ def main(argv: list[str] | None = None) -> None:
     import uvicorn
 
     uvicorn.run(
-        create_app(jobs_dir=args.jobs_dir, token=token), host=args.host, port=args.port
+        create_app(
+            jobs_dir=args.jobs_dir,
+            token=token,
+            enable_mcp=args.mcp,
+            robot_id=args.robot_id,
+            task_reporting=args.task_reporting,
+            mcp_allowed_hosts=args.mcp_allowed_host,
+        ),
+        host=args.host,
+        port=args.port,
     )
 
 

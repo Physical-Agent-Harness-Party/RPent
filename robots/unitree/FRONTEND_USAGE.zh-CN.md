@@ -2,8 +2,12 @@
 
 网页后端先创建父任务，再调用 RPent 的 HTTP 服务。RPent 启动模型会话，登记子任务，调用 A* 和 MuJoCo，并把结果写回网页后端。
 
+启用 LightNav 时，任务提交格式保持不变。`navigation.vln` 提供长工具调用中的实时状态，
+子任务回调增加 `vln_started`、`vln_finished`、`vln_error`；任务顶层可返回
+`verification_required`。本机配置和全部字段见 [VLN 接入说明](VLN_USAGE.zh-CN.md)。
+
 ```text
-网页 → 网页后端创建父任务 → RPent HTTP 服务 → run_rpent.sh → 模型 → A*／MuJoCo
+网页 → 网页后端创建父任务 → RPent HTTP 服务 → run_rpent.sh → 模型 → A*／VLN／MuJoCo
              ↑                                              │
              └────────── 子任务登记与导航结果回调 ────────────┘
 ```
@@ -13,6 +17,7 @@
 | `RPENT_FRONTEND_ENDPOINT`，默认 `http://121.36.57.9:80` | 网页后端，创建父任务、接收子任务和数据 |
 | RPent 主机 `8780` 端口 | 接收启动、查询、日志和停止请求 |
 | `RPENT_NAV_ENDPOINT`／`RPENT_SIM_ENDPOINT` | A*／MuJoCo 服务，不接收前端任务编号 |
+| `RPENT_VLN_ENDPOINT`／`RPENT_OBSERVATION_ENDPOINT` | 可选 LightNav 推理与第一视角服务 |
 
 ## 1. 准备与启动服务
 
@@ -83,7 +88,7 @@ curl --noproxy '*' -fsS --max-time 10 -X POST \
   "$RUNNER_URL/api/rpend/run/$TASK_ID/stop"
 ```
 
-网页后端可每 1–2 秒查询状态。`navigation` 是最近已落盘的工具状态，行走过程中可能尚未更新；`finish.summary`、`error`、`stats` 来自 transcript。日志接口返回 `{"task_id":"...","text":"..."}`，默认末尾 16384 字节，上限 65536 字节。
+网页后端可每 1–2 秒查询状态。A* 的 `navigation` 是最近已落盘的工具状态；VLN 的 `navigation.vln` 在长工具调用中持续更新。`finish.summary`、`error`、`stats` 来自 transcript。日志接口返回 `{"task_id":"...","text":"..."}`，默认末尾 16384 字节，上限 65536 字节。
 
 | `status` | 含义 |
 | --- | --- |
@@ -92,6 +97,7 @@ curl --noproxy '*' -fsS --max-time 10 -X POST \
 | `budget_exhausted` | 达到 `max-turns` 停止，不等于全部目标完成 |
 | `failed`／`incomplete` | 执行失败／正常退出但缺少明确完成证据 |
 | `stopped` | 停止请求后本地进程已结束，远端状态仍看导航记录 |
+| `verification_required` | VLN 已确认停车，但视觉目标缺少独立验收证据 |
 | `requires_attention`／`interrupted` | 强制结束、运动状态不确定，或重启发现未记录结果；阻止新任务 |
 
 未知编号返回 `404`，令牌错误返回 `401`，字段错误返回 `422`，无法创建进程返回 `503`，错误体为 `{"detail":...}`。首次启动的 `202` 和进程退出码 `0` 均不能单独证明任务成功。
@@ -148,7 +154,7 @@ Content-Type: application/json
 | `walk_finished` | 行走结束且通过验收，`navigation_completed=true` |
 | `walk_error` | 行走、验收、超时或取消失败，带错误和最近状态 |
 
-正常每次访问有三条结果，不逐次回传内部轮询。网页按父任务、子任务、`plan_id` 保存阶段历史，避免覆盖前一阶段。结果接口返回 HTTP 2xx 即确认接收，也兼容 204；JSON 中 `ok:false` 视为拒绝。实测数据集响应的整数 `id` 可用；顶层 `task_id` 指子任务，原请求数据放在 `extra_meta`，`source_type` 可能规范为 `sim`，`status:ready` 仅表示记录已创建。
+A* 正常每次访问有三条结果，不逐次回传内部轮询；VLN 生命周期与实时进度见 [VLN 接入说明](VLN_USAGE.zh-CN.md)。网页按父任务、子任务及相应计划或 VLN 会话保存阶段历史，避免覆盖前一阶段。结果接口返回 HTTP 2xx 即确认接收，也兼容 204；JSON 中 `ok:false` 视为拒绝。实测数据集响应的整数 `id` 可用；顶层 `task_id` 指子任务，原请求数据放在 `extra_meta`，`source_type` 可能规范为 `sim`，`status:ready` 仅表示记录已创建。
 
 子任务和数据集响应编号可为字符串或整数，RPent 统一转为字符串。仍兼容旧 `task_id/sub_tasks` 编号映射，以及 `RPENT_FRONTEND_SUBTASKS_FORMAT=object` 的旧登记体；当前对接使用上述数组与 `items` 即可。
 

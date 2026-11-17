@@ -636,22 +636,24 @@ class FrontendNavigationTests(unittest.TestCase):
         ]:
             with self.subTest(flags=flags), self.assertRaises(ValueError):
                 spec.parse_config(
-                    parser.parse_args(
-                        ["--task", "去广告牌", "--unitree-mode", "mujoco", *flags]
-                    )
+                    parser.parse_args([
+                        "--task",
+                        "去广告牌",
+                        "--unitree-mode",
+                        "mujoco",
+                        *flags,
+                    ])
                 )
-        args = parser.parse_args(
-            [
-                "--task",
-                "去广告牌",
-                "--unitree-mode",
-                "mujoco",
-                "--frontend-task-id",
-                "task-123",
-                "--frontend-endpoint",
-                "http://frontend.test",
-            ]
-        )
+        args = parser.parse_args([
+            "--task",
+            "去广告牌",
+            "--unitree-mode",
+            "mujoco",
+            "--frontend-task-id",
+            "task-123",
+            "--frontend-endpoint",
+            "http://frontend.test",
+        ])
         config = spec.parse_config(args)
         self.assertEqual(config.prompt_vars["frontend_task_id"], "task-123")
         self.assertIn(
@@ -757,6 +759,7 @@ Path(os.environ["LAUNCH_TEST_ARGS"]).write_text(json.dumps(sys.argv[1:]))
         self.env.update(
             RPENT_CONFIG_FILE=str(self.config),
             RPENT_FRONTEND_ENDPOINT="http://frontend.test",
+            RPENT_TASK_REPORTING="frontend",
             RPENT_VENV_DIR=str(venv),
             RPENT_RUNS_DIR=str(self.root / "logs"),
             LAUNCH_TEST_ARGS=str(self.root / "args.json"),
@@ -801,6 +804,28 @@ Path(os.environ["LAUNCH_TEST_ARGS"]).write_text(json.dumps(sys.argv[1:]))
         parser.add_argument("--task")
         parsed, _ = parser.parse_known_args(args[2:])
         self.assertEqual(parsed.task, "--max-turns 999 这是任务文本")
+
+    def test_local_reporting_accepts_dispatcher_id_without_frontend_arguments(self):
+        self.env["RPENT_TASK_REPORTING"] = "local"
+        result = self.launch("dispatch-123", "查询实时位姿并报告")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads((self.root / "args.json").read_text())
+        self.assertIn("--task=查询实时位姿并报告", args)
+        self.assertFalse(any(arg.startswith("--frontend-") for arg in args))
+
+    def test_unknown_reporting_mode_fails_before_launch(self):
+        self.env["RPENT_TASK_REPORTING"] = "invalid"
+        result = self.launch("dispatch-123", "test")
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.root / "args.json").exists())
+
+    def test_runner_reporting_mode_is_preserved_when_loading_config(self):
+        self.env["RPENT_TASK_REPORTING"] = "local"
+        self.config.write_text("export RPENT_TASK_REPORTING=frontend\n")
+        result = self.launch("dispatch-123", "查询实时位姿")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads((self.root / "args.json").read_text())
+        self.assertFalse(any(arg.startswith("--frontend-") for arg in args))
 
     def test_missing_arguments_fail_before_launch(self):
         self.assertEqual(self.launch("task-only").returncode, 2)

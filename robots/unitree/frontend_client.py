@@ -210,7 +210,15 @@ class FrontendTaskClient:
     def report(
         self,
         sub_task_id: str,
-        stage: Literal["astar", "walk_accepted", "walk_finished", "walk_error"],
+        stage: Literal[
+            "astar",
+            "walk_accepted",
+            "walk_finished",
+            "walk_error",
+            "vln_started",
+            "vln_finished",
+            "vln_error",
+        ],
         result: dict[str, Any] | None,
         *,
         plan_id: str | None,

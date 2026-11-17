@@ -78,6 +78,7 @@ def get_toolkit(
                 memory=MemoryManager(config.prompt_vars["memory_dir"]),
                 state_output_dir=config.output_dir,
                 navigation_timeout_s=config.prompt_vars["navigation_timeout_s"],
+                vln_timeout_s=config.prompt_vars.get("vln_timeout_s", 120.0),
                 frontend=frontend,
             )
         except Exception:
@@ -123,6 +124,28 @@ def _add_cli_args(parser: argparse.ArgumentParser, use_dashboard: bool) -> None:
         type=float,
         default=300.0,
         help="Per-walk or preview budget in MuJoCo mode (default: 300 seconds).",
+    )
+    parser.add_argument(
+        "--vln-endpoint",
+        default=None,
+        help="Optional LightNav ws:// or wss:// endpoint in MuJoCo mode.",
+    )
+    parser.add_argument(
+        "--observation-endpoint",
+        default=None,
+        help="First-person HTTP service; required with --vln-endpoint.",
+    )
+    parser.add_argument(
+        "--vln-timeout-s",
+        type=float,
+        default=120.0,
+        help="Maximum budget for one VLN episode (default: 120 seconds).",
+    )
+    parser.add_argument(
+        "--vln-inference-timeout-s",
+        type=float,
+        default=3.0,
+        help="Timeout for one LightNav request (default: 3 seconds).",
     )
     parser.add_argument(
         "--frontend-endpoint",
@@ -172,6 +195,23 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
     if args.robot_index is not None:
         validate_robot_index(args.robot_index)
     unitree_mode = getattr(args, "unitree_mode", "gateway")
+    vln_endpoint = getattr(args, "vln_endpoint", None)
+    observation_endpoint = getattr(args, "observation_endpoint", None)
+    if (vln_endpoint is None) != (observation_endpoint is None):
+        raise ValueError(
+            "--vln-endpoint and --observation-endpoint must be provided together"
+        )
+    if vln_endpoint is not None:
+        from robots.unitree.http_client import validate_endpoint
+        from robots.unitree.vln_client import validate_vln_endpoint
+
+        if unitree_mode != "mujoco":
+            raise ValueError("VLN requires --unitree-mode mujoco")
+        validate_vln_endpoint(vln_endpoint)
+        validate_endpoint(observation_endpoint)
+        for value in (args.vln_timeout_s, args.vln_inference_timeout_s):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError("VLN budgets must be finite and positive")
     frontend_endpoint = getattr(args, "frontend_endpoint", None)
     frontend_task_id = getattr(args, "frontend_task_id", None)
     if (frontend_endpoint is None) != (frontend_task_id is None):
@@ -220,6 +260,13 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
             sim_endpoint=args.sim_endpoint,
             navigation_timeout_s=args.navigation_timeout_s,
         )
+        if vln_endpoint is not None:
+            mode_vars.update(
+                vln_endpoint=vln_endpoint,
+                observation_endpoint=observation_endpoint,
+                vln_timeout_s=args.vln_timeout_s,
+                vln_inference_timeout_s=args.vln_inference_timeout_s,
+            )
         if frontend_endpoint is not None:
             mode_vars.update(
                 frontend_endpoint=frontend_endpoint,
@@ -302,8 +349,10 @@ def _init_mujoco_runtime(
     from robots.unitree.navigation_client import NavigationClient
     from robots.unitree.simulation_client import SimulationClient
 
-    selected = {"nav", "sim"} if components is None else components
-    if selected.difference({"nav", "sim"}):
+    enabled_vln = getattr(args, "vln_endpoint", None) is not None
+    available = {"nav", "sim", "vln", "observation"} if enabled_vln else {"nav", "sim"}
+    selected = available if components is None else components
+    if selected.difference(available):
         raise ValueError(f"unknown MuJoCo runtime components: {sorted(selected)}")
     clients: dict[str, Any] = {}
     try:
@@ -314,6 +363,24 @@ def _init_mujoco_runtime(
         identities = [map_identity(client.health()) for client in clients.values()]
         if len(set(identities)) > 1:
             raise ValueError("planning and simulation map_id/map_version do not match")
+        if "observation" in selected:
+            from robots.unitree.observation_client import ObservationClient
+
+            clients["observation"] = ObservationClient(
+                args.observation_endpoint, timeout_s=3.0
+            )
+            identity = map_identity(clients["observation"].observe())
+            if identities and identity != identities[0]:
+                raise ValueError(
+                    "camera and simulation map_id/map_version do not match"
+                )
+        if "vln" in selected:
+            from robots.unitree.vln_client import VlnClient
+
+            clients["vln"] = VlnClient(
+                args.vln_endpoint, timeout_s=args.vln_inference_timeout_s
+            )
+            clients["vln"].health()
     except Exception:
         for client in clients.values():
             client.close()

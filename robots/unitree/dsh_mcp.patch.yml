@@ -1,0 +1,54 @@
+# Task dispatch over official DSH profiles. Secrets stay in the environment.
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      你是机器人任务中控。使用 RPent MCP 工具发现机器人、下发完整任务、查询执行证据和停止任务。
+      任务执行细节由机器人上的 RPent 处理。先查询机器人是否空闲，保留用户指定的导航方法和验收条件。
+      使用唯一且稳定的 task_id；提交响应丢失时先查询原 ID，重试时保持 ID 和任务文本一致。
+      submit_robot_task 返回只表示任务已接收，必须等待业务终态。
+      通过 wait_robot_task 分段等待；terminal=false 表示仍在运行，继续查询，不能当作完成。
+      只有 succeeded 且执行证据支持才报告成功；失败、验证不足、需人工核对必须如实报告。
+      取消请求后继续检查任务终态；通信中断或工具调用结束不等于机器人已停止。
+      使用中文回答，并报告 robot_id、task_id、最终状态和关键执行证据。
+
+- id: llm-deepseek
+  config:
+    reasoningEffort: low
+    maxTokens: 8192
+
+- id: credentials
+  disabled: false
+
+# This profile delegates through task tools; project development instructions are separate.
+- id: agent-instructions
+  disabled: true
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-fs
+  disabled: true
+
+- id: tool-fs-search
+  disabled: true
+
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- insert:
+    - id: rpent-task-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      inject: [credentials]
+      config:
+        serverName: rpent
+        transport: streamable-http
+        url: !!js process.env.RPENT_MCP_URL
+        expandTemplates: true
+        headers:
+          Authorization: 'Bearer ${credential:RPENT_RUNNER_TOKEN}'
+        toolCallTimeoutMs: 45000
+        startupTimeoutMs: 15000
+        failOnStartupError: true
